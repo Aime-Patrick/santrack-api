@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{title}}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:0;background-color:#F7F9FC;font-family:'Inter',sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#F7F9FC;padding:40px 20px;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#FFFFFF;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);">
+          <!-- Header with logo -->
+          <tr>
+            <td style="background-color:#067eda;padding:32px 40px;text-align:center;">
+              <table cellpadding="0" cellspacing="0" style="margin:0 auto;">
+                <tr>
+                  <td style="padding-right:12px;vertical-align:middle;">
+                    <svg width="36" height="40" viewBox="0 0 100 110" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M50 5 C25 5 5 25 5 50 C5 75 25 95 50 105 C75 95 95 75 95 50 C95 25 75 5 50 5Z" fill="url(#grad1)"/>
+                      <path d="M50 20 C35 20 20 35 20 50 C20 65 35 80 50 90 C65 80 80 65 80 50 C80 35 65 20 50 20Z" fill="white" opacity="0.9"/>
+                      <circle cx="50" cy="50" r="8" fill="#067eda"/>
+                      <defs>
+                        <linearGradient id="grad1" x1="0" y1="0" x2="100" y2="100">
+                          <stop offset="0%" stop-color="#067eda"/>
+                          <stop offset="50%" stop-color="#facb2d"/>
+                          <stop offset="100%" stop-color="#00953C"/>
+                        </linearGradient>
+                      </defs>
+                    </svg>
+                  </td>
+                  <td style="vertical-align:middle;">
+                    <span style="color:#FFFFFF;font-size:22px;font-weight:800;letter-spacing:-0.5px;">SAN</span>
+                    <span style="color:#facb2d;font-size:22px;font-weight:800;letter-spacing:-0.5px;">TRACK</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:40px;">
+              {{{body}}}
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background-color:#F7F9FC;padding:24px 40px;text-align:center;border-top:1px solid #D9E1EA;">
+              <p style="margin:0;font-size:12px;color:#5F6B7A;">SANTRACK Industry Management System</p>
+              <p style="margin:4px 0 0;font-size:11px;color:#8994A3;">Rwanda's National Traceability Platform</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

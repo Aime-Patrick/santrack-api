@@ -1,0 +1,5 @@
+allowBuilds:
+  '@scarf/scarf': true
+  bcrypt: set this to true or false
+  msgpackr-extract: true
+  unrs-resolver: set this to true or false

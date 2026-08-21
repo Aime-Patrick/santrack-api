@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Runtime upload storage (STORAGE_LOCAL_ROOT). Licence certificates and other
+# uploaded files live here; they are user data, not source.
+var/

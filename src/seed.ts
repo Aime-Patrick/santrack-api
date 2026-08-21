@@ -1,0 +1,325 @@
+import 'reflect-metadata';
+import * as bcrypt from 'bcryptjs';
+import { DataSource } from 'typeorm';
+import { dataSourceOptions } from './config/data-source';
+
+import { User } from './auth/entities/user.entity';
+import { UserRole } from './auth/user-role.enum';
+import { Organization } from './organization/entities/organization.entity';
+import { OrganizationType } from './organization/organization-type.enum';
+import { Product } from './product/entities/product.entity';
+import { Location } from './location/entities/location.entity';
+import { LocationType } from './location/location-type.enum';
+import { Batch } from './batch/entities/batch.entity';
+import { BatchStatus } from './batch/batch-status.enum';
+import { Department } from './payroll/entities/department.entity';
+import { JobPosition } from './payroll/entities/job-position.entity';
+import { Employee } from './payroll/entities/employee.entity';
+import { EmployeeStatus } from './payroll/payroll.enums';
+import { LicenseCategory, License } from './licensing/entities/license.entity';
+import { LicensedActivity, LicenseStatus } from './licensing/licensing.enums';
+
+const ds = new DataSource(dataSourceOptions);
+
+async function exists<T>(repo: any, where: Record<string, any>): Promise<boolean> {
+  const count = await repo.count({ where });
+  return count > 0;
+}
+
+async function seed() {
+  await ds.initialize();
+  console.log('Database connected.\n');
+
+  const userRepo = ds.getRepository(User);
+  const orgRepo = ds.getRepository(Organization);
+  const productRepo = ds.getRepository(Product);
+  const locationRepo = ds.getRepository(Location);
+  const batchRepo = ds.getRepository(Batch);
+  const departmentRepo = ds.getRepository(Department);
+  const jobPositionRepo = ds.getRepository(JobPosition);
+  const employeeRepo = ds.getRepository(Employee);
+  const licenseCategoryRepo = ds.getRepository(LicenseCategory);
+  const licenseRepo = ds.getRepository(License);
+
+  // ─── Organizations ───
+  console.log('--- Organizations ---');
+  const orgDefs: { name: string; type: OrganizationType }[] = [
+    { name: 'Rwanda Business Standards Agency', type: OrganizationType.REGULATOR },
+    { name: 'Rwanda Fresh Dairy Ltd', type: OrganizationType.MANUFACTURER },
+    { name: 'Kigali Distribution Centre', type: OrganizationType.WAREHOUSE },
+    { name: 'Huye Logistics', type: OrganizationType.DISTRIBUTOR },
+    { name: 'Kimironko Supermarket', type: OrganizationType.RETAILER },
+  ];
+
+  const orgs: Record<string, Organization> = {};
+  for (const def of orgDefs) {
+    if (!(await exists(orgRepo, { name: def.name }))) {
+      const org = orgRepo.create({ name: def.name, type: def.type });
+      await orgRepo.save(org);
+      console.log(`  Created org: ${def.name}`);
+    }
+    orgs[def.name] = (await orgRepo.findOne({ where: { name: def.name } }))!;
+  }
+
+  // ─── Users ───
+  console.log('\n--- Users ---');
+  const pw = await bcrypt.hash('admin123', 10);
+  const userDefs: {
+    email: string;
+    passwordHash: string;
+    fullName: string;
+    role: UserRole;
+    orgName: string | null;
+  }[] = [
+    {
+      email: 'admin@santrack.rw',
+      passwordHash: pw,
+      fullName: 'System Administrator',
+      role: UserRole.SYSTEM_ADMIN,
+      orgName: null,
+    },
+    {
+      email: 'regulator@rbsa.rw',
+      passwordHash: await bcrypt.hash('regulator123', 10),
+      fullName: 'RBSA Admin',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Rwanda Business Standards Agency',
+    },
+    {
+      email: 'manufacturer@dairy.rw',
+      passwordHash: await bcrypt.hash('mfg123', 10),
+      fullName: 'Dairy Manufacturer',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Rwanda Fresh Dairy Ltd',
+    },
+    {
+      email: 'warehouse@store.rw',
+      passwordHash: await bcrypt.hash('wh123', 10),
+      fullName: 'Warehouse Manager',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Kigali Distribution Centre',
+    },
+    {
+      email: 'shop@retail.rw',
+      passwordHash: await bcrypt.hash('shop123', 10),
+      fullName: 'Retail Owner',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Kimironko Supermarket',
+    },
+  ];
+
+  for (const def of userDefs) {
+    if (!(await exists(userRepo, { email: def.email }))) {
+      const user = userRepo.create({
+        email: def.email,
+        passwordHash: def.passwordHash,
+        fullName: def.fullName,
+        role: def.role,
+        organization: def.orgName ? orgs[def.orgName] : null,
+      });
+      await userRepo.save(user);
+      console.log(`  Created user: ${def.email} (${def.role})`);
+    } else {
+      console.log(`  Skipped user: ${def.email} (exists)`);
+    }
+  }
+
+  // ─── Products ───
+  console.log('\n--- Products ---');
+  const productDefs: { name: string; sku: string; category: string }[] = [
+    { name: 'Fresh Milk 1L', sku: 'DAI-MLK-001', category: 'DAIRY' },
+    { name: 'Yogurt 500ml', sku: 'DAI-YGR-001', category: 'DAIRY' },
+    { name: 'Butter 250g', sku: 'DAI-BTR-001', category: 'DAIRY' },
+    { name: 'Cheese Block 200g', sku: 'DAI-CHS-001', category: 'DAIRY' },
+    { name: 'Cream 200ml', sku: 'DAI-CRM-001', category: 'DAIRY' },
+  ];
+
+  const products: Product[] = [];
+  for (const def of productDefs) {
+    if (!(await exists(productRepo, { sku: def.sku }))) {
+      const product = productRepo.create({
+        name: def.name,
+        sku: def.sku,
+        category: def.category,
+      });
+      await productRepo.save(product);
+      console.log(`  Created product: ${def.name}`);
+    }
+    products.push((await productRepo.findOne({ where: { sku: def.sku } }))!);
+  }
+
+  // ─── Locations ───
+  console.log('\n--- Locations ---');
+  const mfgOrg = orgs['Rwanda Fresh Dairy Ltd'];
+  const locationDefs: { name: string; type: LocationType }[] = [
+    { name: 'Main Factory', type: LocationType.FACTORY },
+    { name: 'Cold Store A', type: LocationType.WAREHOUSE },
+    { name: 'Dispatch Bay', type: LocationType.WAREHOUSE },
+  ];
+
+  const locations: Location[] = [];
+  for (const def of locationDefs) {
+    if (!(await exists(locationRepo, { name: def.name, organization: { id: mfgOrg.id } }))) {
+      const loc = locationRepo.create({
+        name: def.name,
+        type: def.type,
+        organization: mfgOrg,
+      });
+      await locationRepo.save(loc);
+      console.log(`  Created location: ${def.name}`);
+    }
+    locations.push(
+      (await locationRepo.findOne({ where: { name: def.name, organization: { id: mfgOrg.id } } }))!,
+    );
+  }
+
+  // ─── Departments ───
+  console.log('\n--- Departments ---');
+  const deptDefs: { code: string; name: string }[] = [
+    { code: 'PRD', name: 'Production' },
+    { code: 'QC', name: 'Quality Control' },
+    { code: 'WHS', name: 'Warehouse' },
+  ];
+
+  const departments: Department[] = [];
+  for (const def of deptDefs) {
+    if (!(await exists(departmentRepo, { code: def.code, organization: { id: mfgOrg.id } }))) {
+      const dept = departmentRepo.create({
+        code: def.code,
+        name: def.name,
+        organization: mfgOrg,
+      });
+      await departmentRepo.save(dept);
+      console.log(`  Created department: ${def.name}`);
+    }
+    departments.push(
+      (await departmentRepo.findOne({ where: { code: def.code, organization: { id: mfgOrg.id } } }))!,
+    );
+  }
+
+  // ─── Job Positions ───
+  console.log('\n--- Job Positions ---');
+  const posDefs: { code: string; title: string }[] = [
+    { code: 'PM', title: 'Production Manager' },
+    { code: 'QO', title: 'Quality Officer' },
+    { code: 'WM', title: 'Warehouse Manager' },
+  ];
+
+  const positions: JobPosition[] = [];
+  for (const def of posDefs) {
+    if (!(await exists(jobPositionRepo, { code: def.code, organization: { id: mfgOrg.id } }))) {
+      const pos = jobPositionRepo.create({
+        code: def.code,
+        title: def.title,
+        organization: mfgOrg,
+      });
+      await jobPositionRepo.save(pos);
+      console.log(`  Created position: ${def.title}`);
+    }
+    positions.push(
+      (await jobPositionRepo.findOne({ where: { code: def.code, organization: { id: mfgOrg.id } } }))!,
+    );
+  }
+
+  // ─── Employees ───
+  console.log('\n--- Employees ---');
+  const empDefs: {
+    employeeNumber: string;
+    name: string;
+    deptIndex: number;
+    posIndex: number;
+    phone: string;
+    salary: string;
+  }[] = [
+    { employeeNumber: 'EMP-001', name: 'John Mugabo', deptIndex: 0, posIndex: 0, phone: '+250788100001', salary: '350000' },
+    { employeeNumber: 'EMP-002', name: 'Alice Nyiraneza', deptIndex: 1, posIndex: 1, phone: '+250788100002', salary: '300000' },
+    { employeeNumber: 'EMP-003', name: 'Peter Habimana', deptIndex: 2, posIndex: 2, phone: '+250788100003', salary: '280000' },
+  ];
+
+  for (const def of empDefs) {
+    if (!(await exists(employeeRepo, { employeeNumber: def.employeeNumber, organization: { id: mfgOrg.id } }))) {
+      const emp = employeeRepo.create({
+        employeeNumber: def.employeeNumber,
+        name: def.name,
+        organization: mfgOrg,
+        department: departments[def.deptIndex],
+        position: positions[def.posIndex],
+        status: EmployeeStatus.ACTIVE,
+        hireDate: '2024-01-15',
+        phone: def.phone,
+        baseSalary: def.salary,
+      });
+      await employeeRepo.save(emp);
+      console.log(`  Created employee: ${def.name}`);
+    } else {
+      console.log(`  Skipped employee: ${def.name} (exists)`);
+    }
+  }
+
+  // ─── Batches ───
+  console.log('\n--- Batches ---');
+  const batchDefs: { batchCode: string; productIndex: number; expiresOn: string }[] = [
+    { batchCode: 'DAI-2026-001', productIndex: 0, expiresOn: '2026-08-25' },
+    { batchCode: 'DAI-2026-002', productIndex: 1, expiresOn: '2026-09-15' },
+    { batchCode: 'DAI-2026-003', productIndex: 2, expiresOn: '2026-12-01' },
+  ];
+
+  for (const def of batchDefs) {
+    if (!(await exists(batchRepo, { batchCode: def.batchCode }))) {
+      const batch = batchRepo.create({
+        batchCode: def.batchCode,
+        product: products[def.productIndex],
+        manufacturer: mfgOrg,
+        manufacturedOn: '2026-08-15',
+        expiresOn: def.expiresOn,
+        status: BatchStatus.ACTIVE,
+      });
+      await batchRepo.save(batch);
+      console.log(`  Created batch: ${def.batchCode}`);
+    } else {
+      console.log(`  Skipped batch: ${def.batchCode} (exists)`);
+    }
+  }
+
+  // ─── License Category & License ───
+  console.log('\n--- Licenses ---');
+  // Uses the category the licensing migration installed rather than creating a
+  // second one. The seed previously inserted 'MFG-001' alongside the migration's
+  // 'MFG', leaving two categories claiming MANUFACTURING and making provisional
+  // licence resolution depend on row order. Development data should exercise the
+  // real schema, not add to it.
+  const mfgCategoryCode = 'MFG';
+  const licCategory = await licenseCategoryRepo.findOne({
+    where: { code: mfgCategoryCode },
+  });
+  if (!licCategory) {
+    throw new Error(
+      `Licence category ${mfgCategoryCode} is missing — run migrations before seeding.`,
+    );
+  }
+
+  const licNumber = 'LIC-MFG-2026-001';
+  if (!(await exists(licenseRepo, { licenseNumber: licNumber }))) {
+    const license = licenseRepo.create({
+      licenseNumber: licNumber,
+      organization: mfgOrg,
+      category: licCategory,
+      status: LicenseStatus.ACTIVE,
+      issuedBy: orgs['Rwanda Business Standards Agency'],
+      issuedOn: '2026-01-01',
+      expiresOn: '2027-12-31',
+    });
+    await licenseRepo.save(license);
+    console.log(`  Created license: ${licNumber}`);
+  } else {
+    console.log(`  Skipped license: ${licNumber} (exists)`);
+  }
+
+  console.log('\nSeed complete.');
+  await ds.destroy();
+}
+
+seed().catch((err) => {
+  console.error('Seed failed:', err);
+  process.exit(1);
+});
