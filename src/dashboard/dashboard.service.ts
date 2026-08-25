@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { TraceableItem, today } from '../item/entities/traceable-item.entity';
-import { ItemStatus } from '../item/item.enums';
+import { ItemStatus, NON_PHYSICAL_STATUSES } from '../item/item.enums';
 import { Organization } from '../organization/entities/organization.entity';
 import { TraceabilityEvent } from '../traceability/entities/traceability-event.entity';
 import { Transfer, TransferStatus } from '../transfer/entities/transfer.entity';
@@ -50,7 +50,15 @@ export class DashboardService {
 
     const [identitiesHeld, scansToday, pendingIncomingTransfers, blockedIdentities] =
       await Promise.all([
-        this.items.count({ where: { holder: { id: organization.id } } }),
+        // Held identities means products held. A minted code is neither
+        // held nor a product, so Not(In(...)) keeps a print run out of the
+        // number on the front page (DR-08).
+        this.items.count({
+          where: {
+            holder: { id: organization.id },
+            status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
+          },
+        }),
         this.events
           .createQueryBuilder('e')
           .innerJoin('traceable_items', 'i', 'i.id = e.item_id')

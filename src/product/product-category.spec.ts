@@ -36,6 +36,9 @@ describe('product category assignment', () => {
       products as never,
       {} as never,
       categories as never,
+      // Brands: these cases only exercise the category rules, and a product
+      // with no brandId never reaches the repository.
+      { findOne: () => Promise.resolve(null) } as never,
     );
   }
 

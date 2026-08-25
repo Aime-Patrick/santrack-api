@@ -6,6 +6,7 @@ import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { Product } from '../../product/entities/product.entity';
 import { CreateBatchDto } from '../dto/batch.dto';
@@ -19,6 +20,8 @@ export class BatchService {
     private readonly batches: Repository<Batch>,
     @InjectRepository(Product)
     private readonly products: Repository<Product>,
+    @InjectRepository(Facility)
+    private readonly facilities: Repository<Facility>,
   ) {}
 
   /**
@@ -49,11 +52,26 @@ export class BatchService {
       );
     }
 
+    // Another business's site is reported as absent rather than forbidden,
+    // matching how the licensing and facility endpoints answer the same
+    // question - a 403 would confirm a site with that id exists.
+    let facility: Facility | null = null;
+    if (dto.facilityId !== undefined && dto.facilityId !== null) {
+      facility = await this.facilities.findOne({
+        where: { id: dto.facilityId },
+      });
+      if (!facility || facility.organizationId !== organization.id) {
+        throw new NotFoundEntityException('Facility', dto.facilityId);
+      }
+    }
+
     return this.batches.save(
       this.batches.create({
         product,
         batchCode,
         manufacturer: organization,
+        facility,
+        facilityId: facility?.id ?? null,
         manufacturedOn: dto.manufacturedOn ?? null,
         expiresOn: dto.expiresOn ?? null,
       }),

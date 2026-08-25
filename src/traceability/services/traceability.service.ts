@@ -38,6 +38,7 @@ export interface VerificationResponse {
   facilityName: string | null;
   batchCode: string | null;
   batchStatus: string | null;
+  itemStatus: ItemStatus | null;
   manufacturedOn: string | null;
   expiresOn: string | null;
   expired: boolean;
@@ -197,6 +198,7 @@ export class TraceabilityService {
         facilityName: null,
         batchCode: null,
         batchStatus: null,
+        itemStatus: null,
         manufacturedOn: null,
         expiresOn: null,
         expired: false,
@@ -222,6 +224,7 @@ export class TraceabilityService {
       facilityName: batch?.facility?.name ?? null,
       batchCode: batch?.batchCode ?? null,
       batchStatus: batch?.status ?? null,
+      itemStatus: item.status,
       manufacturedOn: batch?.manufacturedOn ?? null,
       expiresOn: item.expiresOn,
       expired,

@@ -13,7 +13,16 @@ import { Batch } from '../../batch/entities/batch.entity';
 import { Location } from '../../location/entities/location.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { Product } from '../../product/entities/product.entity';
-import { ItemKind, ItemStatus, PackageType, SealState } from '../item.enums';
+import { User } from '../../auth/entities/user.entity';
+import {
+  CancellationReason,
+  existsPhysically,
+  ItemKind,
+  ItemStatus,
+  PackageType,
+  SealState,
+} from '../item.enums';
+import { IdentityPool } from './identity-pool.entity';
 
 /**
  * One permanent QR identity - either an individual product unit or a physical
@@ -31,6 +40,7 @@ import { ItemKind, ItemStatus, PackageType, SealState } from '../item.enums';
 @Index('idx_item_holder', ['holder'])
 @Index('idx_item_batch', ['batch'])
 @Index('idx_item_product', ['product'])
+@Index('idx_item_pool', ['pool'])
 export class TraceableItem {
   @PrimaryGeneratedColumn()
   id: number;
@@ -105,6 +115,32 @@ export class TraceableItem {
   @Column({ name: 'expires_on', type: 'date', nullable: true })
   expiresOn: string | null;
 
+  /**
+   * The minting request this code came from, if it was minted into a pool
+   * (DR-08). Null for identities created straight at production, which is how
+   * everything worked before pools existed.
+   */
+  @ManyToOne(() => IdentityPool, { nullable: true })
+  @JoinColumn({ name: 'pool_id' })
+  pool: IdentityPool | null;
+
+  /**
+   * Why this code will never name a product. Set only alongside
+   * ItemStatus.CANCELLED, and never cleared: the row survives so that a scan
+   * in the market can answer "cancelled during production", which is a far
+   * better answer than "unknown code" - the second invites the scanner to
+   * assume the system is broken rather than the bottle invalid.
+   */
+  @Column({ name: 'cancellation_reason', type: 'varchar', nullable: true })
+  cancellationReason: CancellationReason | null;
+
+  @Column({ name: 'cancelled_at', type: 'timestamptz', nullable: true })
+  cancelledAt: Date | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'cancelled_by_id' })
+  cancelledBy: User | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
@@ -117,6 +153,14 @@ export class TraceableItem {
 
   isPackage(): boolean {
     return this.kind === ItemKind.PACKAGE;
+  }
+
+  /**
+   * Whether a physical thing exists under this identity yet. A minted code is
+   * a label, not a bottle, and no count of stock may include it.
+   */
+  isProduced(): boolean {
+    return existsPhysically(this.status);
   }
 
   /**

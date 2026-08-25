@@ -7,6 +7,8 @@ import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { EmailService } from '../../email/email.service';
 import { today } from '../../item/entities/traceable-item.entity';
 import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
@@ -68,6 +70,8 @@ export class LicenseService {
     private readonly sequences: SequenceService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
+    private readonly notifications: NotificationsGateway,
+    private readonly email: EmailService,
   ) {}
 
   // ------------------------------------------------------------ applicant
@@ -288,6 +292,34 @@ export class LicenseService {
     });
   }
 
+  /**
+   * Withdraw a draft application before it reaches the regulator.
+   *
+   * Only DRAFT licences can be cancelled — once submitted, the regulator
+   * owns the process.  The licence is soft-deleted (status → CANCELLED)
+   * rather than removed, so the audit trail stays intact.
+   */
+  async cancel(
+    organization: Organization,
+    actor: User,
+    licenseId: number,
+  ): Promise<License> {
+    return this.dataSource.transaction(async (manager) => {
+      const license = await this.requireOwn(organization, licenseId, manager);
+      if (license.status !== LicenseStatus.DRAFT) {
+        throw new TraceabilityRuleException(
+          `Only a draft licence can be cancelled — ${license.licenseNumber} is ${license.status}`,
+        );
+      }
+
+      return this.transition(manager, license, actor, {
+        to: LicenseStatus.CANCELLED,
+        event: LicenseEventType.CANCELLED,
+        reason: 'Cancelled by applicant',
+      });
+    });
+  }
+
   // ------------------------------------------------------------ regulator
 
   /** Applications waiting on this regulator. */
@@ -342,7 +374,7 @@ export class LicenseService {
   ): Promise<License> {
     requireRegulator(regulator);
 
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const license = await this.require(licenseId, manager);
 
       if (
@@ -382,6 +414,14 @@ export class LicenseService {
         reason: dto.reason,
       });
     });
+
+    // Notify the applicant's organization outside the transaction — notification
+    // and email failures must not roll back the licence decision.
+    this.notifyApplicant(saved, dto.decision).catch((err) =>
+      this.logger.error(`Failed to notify applicant about ${saved.licenseNumber}:`, err),
+    );
+
+    return saved;
   }
 
   /**
@@ -400,7 +440,7 @@ export class LicenseService {
       throw new TraceabilityRuleException('A suspension needs a reason');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const license = await this.require(licenseId, manager);
       if (license.status !== LicenseStatus.ACTIVE) {
         throw new TraceabilityRuleException(
@@ -413,6 +453,11 @@ export class LicenseService {
         reason,
       });
     });
+
+    this.notifyApplicant(saved, 'SUSPENDED', reason).catch((err) =>
+      this.logger.error(`Failed to notify about suspension of ${saved.licenseNumber}:`, err),
+    );
+    return saved;
   }
 
   /** Lifts a suspension once the cause is resolved. */
@@ -424,7 +469,7 @@ export class LicenseService {
   ): Promise<License> {
     requireRegulator(regulator);
 
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const license = await this.require(licenseId, manager);
       if (license.status !== LicenseStatus.SUSPENDED) {
         throw new TraceabilityRuleException(
@@ -442,6 +487,11 @@ export class LicenseService {
         reason,
       });
     });
+
+    this.notifyApplicant(saved, 'REINSTATED').catch((err) =>
+      this.logger.error(`Failed to notify about reinstatement of ${saved.licenseNumber}:`, err),
+    );
+    return saved;
   }
 
   /** Ends a licence permanently. */
@@ -456,7 +506,7 @@ export class LicenseService {
       throw new TraceabilityRuleException('A revocation needs a reason');
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const license = await this.require(licenseId, manager);
       if (license.status === LicenseStatus.REVOKED) {
         throw new TraceabilityRuleException(
@@ -469,6 +519,11 @@ export class LicenseService {
         reason,
       });
     });
+
+    this.notifyApplicant(saved, 'REVOKED', reason).catch((err) =>
+      this.logger.error(`Failed to notify about revocation of ${saved.licenseNumber}:`, err),
+    );
+    return saved;
   }
 
   /**
@@ -617,11 +672,33 @@ export class LicenseService {
     return this.categories.find({ where: { active: true }, order: { name: 'ASC' } });
   }
 
+  /**
+   * The holder's own paperwork. Ownership first, then the list - a licence
+   * that is not yours reads as absent rather than as forbidden, the same way
+   * `readDocument` treats a certificate that is not yours.
+   */
+  async documentsOfOwn(
+    organization: Organization,
+    licenseId: number,
+  ): Promise<LicenseDocument[]> {
+    await this.requireOwn(organization, licenseId);
+    return this.documentsOf(licenseId);
+  }
+
   async documentsOf(licenseId: number): Promise<LicenseDocument[]> {
     return this.documents.find({
       where: { license: { id: licenseId } },
       order: { uploadedAt: 'ASC' },
     });
+  }
+
+  /** The holder's own audit trail. Ownership first, as with the documents. */
+  async historyOfOwn(
+    organization: Organization,
+    licenseId: number,
+  ): Promise<LicenseEvent[]> {
+    await this.requireOwn(organization, licenseId);
+    return this.historyOf(licenseId);
   }
 
   async historyOf(licenseId: number): Promise<LicenseEvent[]> {
@@ -821,6 +898,95 @@ export class LicenseService {
   ): Promise<string> {
     const n = await this.sequences.next(manager, `LIC-${categoryCode}`);
     return `LIC-${categoryCode}-${String(n).padStart(5, '0')}`;
+  }
+
+  // ------------------------------------------------------------------ notify
+
+  /**
+   * Notify every user in the applicant's organisation about a licence
+   * decision. Fire-and-forget: failures are logged but do not affect the
+   * outcome.
+   */
+  private async notifyApplicant(
+    license: License,
+    action: ReviewDecision | 'SUSPENDED' | 'REINSTATED' | 'REVOKED',
+    reason?: string,
+  ): Promise<void> {
+    const orgId = license.organization.id;
+    const orgName = license.organization.name;
+    const licenceNum = license.licenseNumber;
+    const categoryName = license.category.name;
+
+    const messageMap: Record<string, { title: string; message: string; notifType: string }> = {
+      APPROVE: {
+        title: `Licence Approved: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) has been approved. ${license.expiresOn ? `Valid until ${license.expiresOn}.` : ''}`,
+        notifType: 'SUCCESS',
+      },
+      REJECT: {
+        title: `Licence Rejected: ${licenceNum}`,
+        message: `Your ${categoryName} licence application (${licenceNum}) has been rejected. ${reason ?? license.statusReason ?? 'Please review and reapply.'}`,
+        notifType: 'WARNING',
+      },
+      SUSPENDED: {
+        title: `Licence Suspended: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) has been suspended. ${reason ?? license.statusReason ?? ''}`,
+        notifType: 'DANGER',
+      },
+      REINSTATED: {
+        title: `Licence Reinstated: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) has been reinstated and is now active again.${license.expiresOn ? ` Valid until ${license.expiresOn}.` : ''}`,
+        notifType: 'SUCCESS',
+      },
+      REVOKED: {
+        title: `Licence Revoked: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) has been permanently revoked. ${reason ?? license.statusReason ?? ''}`,
+        notifType: 'DANGER',
+      },
+    };
+
+    const info = messageMap[action];
+    if (!info) return;
+
+    // Find all users in the applicant's organisation
+    const users = await this.dataSource
+      .getRepository(User)
+      .find({ where: { organization: { id: orgId } } });
+
+    const notificationPromises = users.map(async (user) => {
+      // In-app notification
+      await this.notifications.sendToUser(user.id, {
+        type: info.notifType,
+        title: info.title,
+        message: info.message,
+        module: 'licensing',
+        actionUrl: '/dashboard/licenses',
+      });
+
+      // Email
+      if (user.email) {
+        await this.email.send({
+          to: user.email,
+          subject: info.title,
+          template: 'license-decision',
+          data: {
+            recipientName: user.fullName,
+            organisationName: orgName,
+            licenceNumber: licenceNum,
+            categoryName,
+            decision: action.toLowerCase(),
+            reason: reason ?? license.statusReason ?? undefined,
+            expiresOn: license.expiresOn ?? undefined,
+            reviewedBy: license.reviewedBy?.fullName ?? 'The licensing authority',
+          },
+        }).catch((err) => {
+          this.logger.warn(`Email to ${user.email} failed: ${err.message}`);
+        });
+      }
+    });
+
+    await Promise.allSettled(notificationPromises);
+    this.logger.log(`Notified ${users.length} user(s) at ${orgName} about ${licenceNum} (${action})`);
   }
 }
 

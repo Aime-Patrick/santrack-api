@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull, Not, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { User } from '../../auth/entities/user.entity';
@@ -21,7 +21,13 @@ import { TraceabilityEvent } from '../../traceability/entities/traceability-even
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
 import { TraceableItem } from '../entities/traceable-item.entity';
-import { ItemKind, ItemStatus, SealState, isTerminal } from '../item.enums';
+import {
+  ItemKind,
+  ItemStatus,
+  NON_PHYSICAL_STATUSES,
+  SealState,
+  isTerminal,
+} from '../item.enums';
 import { ItemCodeGenerator } from './item-code-generator.service';
 import { PackDto, RegisterPackageDto, RegisterUnitsDto, RemoveUnitDto, ScanDto } from '../dto/item.dto';
 
@@ -56,7 +62,13 @@ export class ItemService {
   /**
    * Resolves a scan. Accepts the QR payload, the printed code, a
    * manufacturer barcode (GTIN), or a product SKU — in which case the first
-   * active item of the matching product is returned.
+   * produced item of the matching product is returned.
+   *
+   * The GTIN and SKU fallbacks skip identities that name nothing physical
+   * (DR-08). Without that they would return the lowest-numbered row for the
+   * product, which since pools exist is a freshly minted label from a print
+   * run rather than a bottle on a shelf — so scanning a barcode in a warehouse
+   * full of stock would resolve to a code for a bottle nobody has made.
    */
   async require(qrCode: string, manager?: EntityManager): Promise<TraceableItem> {
     const repo = manager ? manager.getRepository(TraceableItem) : this.items;
@@ -69,7 +81,10 @@ export class ItemService {
     const productByGtin = await this.products.findOne({ where: { gtin: qrCode } });
     if (productByGtin) {
       const itemByGtin = await repo.findOne({
-        where: { product: { id: productByGtin.id } },
+        where: {
+          product: { id: productByGtin.id },
+          status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
+        },
         relations: { parent: true },
         order: { id: 'ASC' },
       });
@@ -80,7 +95,10 @@ export class ItemService {
     const productBySku = await this.products.findOne({ where: { sku: qrCode } });
     if (productBySku) {
       const itemBySku = await repo.findOne({
-        where: { product: { id: productBySku.id } },
+        where: {
+          product: { id: productBySku.id },
+          status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
+        },
         relations: { parent: true },
         order: { id: 'ASC' },
       });

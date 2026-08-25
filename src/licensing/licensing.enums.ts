@@ -20,6 +20,8 @@ export enum LicenseStatus {
   SUSPENDED = 'SUSPENDED',
   /** Terminal. Serious or repeated failure. */
   REVOKED = 'REVOKED',
+  /** Withdrawn by the applicant before submission. */
+  CANCELLED = 'CANCELLED',
 }
 
 /** Licences that let a business act normally. */
@@ -77,6 +79,7 @@ export enum LicenseEventType {
   REINSTATED = 'REINSTATED',
   REVOKED = 'REVOKED',
   RENEWED = 'RENEWED',
+  CANCELLED = 'CANCELLED',
   EXPIRED = 'EXPIRED',
 }
 

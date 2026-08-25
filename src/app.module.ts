@@ -28,9 +28,11 @@ import { DashboardService } from './dashboard/dashboard.service';
 import { InventoryController } from './inventory/controllers/inventory.controller';
 import { InventoryService } from './inventory/services/inventory.service';
 
+import { IdentityPoolController } from './item/controllers/identity-pool.controller';
 import { ItemController } from './item/controllers/item.controller';
 import { CodeSequence } from './item/entities/code-sequence.entity';
 import { TraceableItem } from './item/entities/traceable-item.entity';
+import { IdentityPoolService } from './item/services/identity-pool.service';
 import { ItemCodeGenerator } from './item/services/item-code-generator.service';
 import { ItemService } from './item/services/item.service';
 import { LifecycleService } from './item/services/lifecycle.service';
@@ -62,6 +64,8 @@ import { ProductionService } from './manufacturing/services/production.service';
 import { QualityInspectionService } from './manufacturing/services/quality-inspection.service';
 import { RawMaterialService } from './manufacturing/services/raw-material.service';
 import { LicenseEnforcementService } from './licensing/services/license-enforcement.service';
+import { ProductionEligibilityService } from './licensing/services/production-eligibility.service';
+import { ComplianceOverviewService } from './licensing/services/compliance-overview.service';
 
 import { CustomerController } from './commerce/controllers/customer.controller';
 import { InvoiceController } from './commerce/controllers/invoice.controller';
@@ -141,6 +145,7 @@ import { OrganizationService } from './organization/services/organization.servic
 import { FacilityService } from './organization/services/facility.service';
 
 import { ProductController } from './product/controllers/product.controller';
+import { BrandController } from './product/controllers/brand.controller';
 import { ProductCategoryController } from './product/controllers/product-category.controller';
 import { Product } from './product/entities/product.entity';
 import { ProductService } from './product/services/product.service';
@@ -149,6 +154,8 @@ import {
   LicenseController,
   LicenseReviewController,
 } from './licensing/controllers/license.controller';
+import { ProductionEligibilityController } from './licensing/controllers/production-eligibility.controller';
+import { ComplianceOverviewController } from './licensing/controllers/compliance-overview.controller';
 import { LicenseService } from './licensing/services/license.service';
 import { SequenceService } from './common/sequence.service';
 import { StorageModule } from './storage/storage.module';
@@ -249,7 +256,9 @@ import { SecurityModule } from './security/security.module';
     LocationController,
     ProductController,
     ProductCategoryController,
+    BrandController,
     BatchController,
+    IdentityPoolController,
     ItemController,
     InventoryController,
     TransferController,
@@ -262,6 +271,8 @@ import { SecurityModule } from './security/security.module';
     DashboardController,
     LicenseController,
     LicenseReviewController,
+    ProductionEligibilityController,
+    ComplianceOverviewController,
     RawMaterialController,
     BomController,
     MachineController,
@@ -314,6 +325,7 @@ import { SecurityModule } from './security/security.module';
     ProductService,
     BatchService,
     ItemCodeGenerator,
+    IdentityPoolService,
     ItemService,
     LifecycleService,
     BarcodeService,
@@ -331,6 +343,8 @@ import { SecurityModule } from './security/security.module';
     SequenceService,
     LicenseService,
     LicenseEnforcementService,
+    ProductionEligibilityService,
+    ComplianceOverviewService,
     RawMaterialService,
     BomService,
     MachineService,

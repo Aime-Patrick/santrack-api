@@ -10,6 +10,7 @@ import {
 import { TraceableItem } from '../../item/entities/traceable-item.entity';
 import { CreateProductDto } from '../dto/product.dto';
 import { Product } from '../entities/product.entity';
+import { Brand } from '../entities/brand.entity';
 import { ProductCategory } from '../entities/product-category.entity';
 import { TraceabilityLevel } from '../traceability-level.enum';
 
@@ -22,6 +23,8 @@ export class ProductService {
     private readonly items: Repository<TraceableItem>,
     @InjectRepository(ProductCategory)
     private readonly categories: Repository<ProductCategory>,
+    @InjectRepository(Brand)
+    private readonly brands: Repository<Brand>,
   ) {}
 
   /**
@@ -32,6 +35,42 @@ export class ProductService {
    * classified when it was not, and that belief is exactly what the taxonomy
    * exists to prevent (DR-05).
    */
+  /**
+   * The brand this product is sold under, checked to be one of the caller's
+   * own.
+   *
+   * Another organization's brand reads as absent rather than forbidden, the
+   * same answer the brands endpoint gives — a 403 would confirm that a brand
+   * with that id exists, and a competitor's brand list is exactly the thing
+   * worth not confirming.
+   */
+  private async resolveBrand(
+    organizationId: number,
+    dto: CreateProductDto,
+  ): Promise<number | null> {
+    if (dto.brand !== undefined && dto.brand !== null) {
+      throw new TraceabilityRuleException(
+        'Brands come from your own list now: send brandId instead of a brand ' +
+          'name. Ask GET /api/brands for the list.',
+      );
+    }
+
+    if (dto.brandId === undefined || dto.brandId === null) {
+      return null;
+    }
+
+    const brand = await this.brands.findOne({ where: { id: dto.brandId } });
+    if (!brand || brand.organizationId !== organizationId) {
+      throw new NotFoundEntityException('Brand', dto.brandId);
+    }
+    if (!brand.active) {
+      throw new TraceabilityRuleException(
+        `${brand.name} has been withdrawn and cannot be assigned to new products`,
+      );
+    }
+    return brand.id;
+  }
+
   private async resolveCategory(dto: CreateProductDto): Promise<number | null> {
     if (dto.category !== undefined && dto.category !== null) {
       throw new TraceabilityRuleException(
@@ -58,6 +97,41 @@ export class ProductService {
     return category.id;
   }
 
+  /**
+   * The unit model, checked as a set rather than field by field (DR-09).
+   *
+   * A pack with no size cannot be converted, and a size with no pack has
+   * nothing to name, so half a definition is refused rather than stored — a
+   * product carrying `unitsPerPack: 24` and no `packUnit` would offer a sales
+   * unit nobody can put a word to.
+   *
+   * The check runs against the *result* of the change, not the payload sent.
+   * Sending only `packUnit` to a product that already has a size is a complete
+   * definition; sending only `unitsPerPack` to one with no pack is not, and the
+   * difference is invisible if you look at the request alone.
+   */
+  private resolvePackaging(
+    dto: CreateProductDto,
+    current?: Product,
+  ): Pick<Product, 'baseUnit' | 'packUnit' | 'unitsPerPack'> {
+    const baseUnit = text(dto.baseUnit, current?.baseUnit);
+    const packUnit = text(dto.packUnit, current?.packUnit);
+    const unitsPerPack =
+      dto.unitsPerPack !== undefined
+        ? (dto.unitsPerPack ?? null)
+        : (current?.unitsPerPack ?? null);
+
+    if ((packUnit === null) !== (unitsPerPack === null)) {
+      throw new TraceabilityRuleException(
+        packUnit === null
+          ? `A pack size of ${unitsPerPack} needs a pack to name: send packUnit with it`
+          : `${packUnit} needs a size: send unitsPerPack with it`,
+      );
+    }
+
+    return { baseUnit, packUnit, unitsPerPack };
+  }
+
   async create(organizationId: number, dto: CreateProductDto): Promise<Product> {
     const sku = dto.sku?.trim() || generateSku();
 
@@ -71,6 +145,18 @@ export class ProductService {
       );
     }
 
+    const gtin = dto.gtin?.trim() || null;
+    if (gtin) {
+      const existingWithGtin = await this.products.findOne({
+        where: { gtin },
+      });
+      if (existingWithGtin) {
+        throw new DuplicateException(
+          `A product with Barcode / GTIN "${gtin}" already exists in the catalog (${existingWithGtin.name})`,
+        );
+      }
+    }
+
     const saved = await this.products.save(
       this.products.create({
         organizationId,
@@ -80,12 +166,15 @@ export class ProductService {
         // The legacy string is no longer written. Existing rows keep theirs as
         // the record of what was originally typed (DR-05).
         category: null,
-        brand: dto.brand ?? null,
+        brandId: await this.resolveBrand(organizationId, dto),
+        // The legacy string is no longer written, as with `category`.
+        brand: null,
         model: dto.model ?? null,
         specification: dto.specification ?? null,
-        gtin: dto.gtin?.trim() || null,
+        gtin,
         barcodeSymbology: dto.barcodeSymbology ?? null,
         traceabilityLevel: dto.traceabilityLevel ?? TraceabilityLevel.SERIAL,
+        ...this.resolvePackaging(dto),
       }),
     );
 
@@ -135,6 +224,18 @@ export class ProductService {
       }
     }
 
+    const gtin = dto.gtin !== undefined ? (dto.gtin?.trim() || null) : product.gtin;
+    if (gtin && gtin !== product.gtin) {
+      const existingWithGtin = await this.products.findOne({
+        where: { gtin },
+      });
+      if (existingWithGtin && existingWithGtin.id !== product.id) {
+        throw new DuplicateException(
+          `A product with Barcode / GTIN "${gtin}" already exists in the catalog (${existingWithGtin.name})`,
+        );
+      }
+    }
+
     /**
      * Resolved unconditionally, so free text is refused on update as well as on
      * create. Guarding this on `categoryId` being present left the door open:
@@ -155,6 +256,7 @@ export class ProductService {
       gtin: dto.gtin?.trim() || product.gtin,
       barcodeSymbology: dto.barcodeSymbology ?? product.barcodeSymbology,
       traceabilityLevel: dto.traceabilityLevel ?? product.traceabilityLevel,
+      ...this.resolvePackaging(dto, product),
     });
     const saved = await this.products.save(product);
     return this.get(saved.id, organizationId);
@@ -186,4 +288,16 @@ export class ProductService {
 
 function generateSku(): string {
   return `SKU-${randomUUID().slice(0, 8).toUpperCase()}`;
+}
+
+/**
+ * The value a text field ends up with: what was sent if anything was, otherwise
+ * what is already held. Blank counts as clearing it, so a field emptied in a
+ * form does not come back as the string it used to be.
+ */
+function text(sent: string | undefined, held: string | null | undefined): string | null {
+  if (sent === undefined) {
+    return held ?? null;
+  }
+  return sent.trim() || null;
 }

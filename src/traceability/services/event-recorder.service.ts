@@ -11,6 +11,19 @@ import { Organization } from '../../organization/entities/organization.entity';
 import { TraceabilityEvent } from '../entities/traceability-event.entity';
 import { EventType } from '../event-type.enum';
 
+/**
+ * Events per INSERT statement.
+ *
+ * Postgres accepts at most 65,535 bind parameters in one statement, and an
+ * event binds seventeen columns, so a single insert tops out somewhere near
+ * three thousand eight hundred rows. Confirming a run of ten thousand bottles
+ * writes ten thousand events in one call and would sail straight past that,
+ * failing with "bind message has 170000 parameter formats but 0 parameters" -
+ * a message that says nothing about the real cause. Chunking here means no
+ * caller has to know the limit exists.
+ */
+const INSERT_CHUNK = 1000;
+
 /** Everything one lifecycle event can carry. */
 export interface RecordEvent {
   /** The identity this happened to. Omit for lot-level manufacturing events. */
@@ -51,7 +64,43 @@ export class EventRecorder {
   async record(manager: EntityManager, input: RecordEvent): Promise<TraceabilityEvent> {
     requireOneSubject(input);
 
-    const event = manager.create(TraceabilityEvent, {
+    return manager.save(TraceabilityEvent, this.build(manager, input));
+  }
+
+  /**
+   * Appends many events as one multi-row insert.
+   *
+   * Exists because minting a pool records one birth event per identity, and
+   * ten thousand of those as individual saves is ten thousand round trips -
+   * about fifty seconds of them. Nothing about the event shape changes; this
+   * is the same construction as record(), applied to a list, so the recorder
+   * stays the single door every module enters through.
+   *
+   * Returns nothing. The caller is minting rows in bulk and has no use for ten
+   * thousand hydrated entities; building them would cost more than the insert
+   * it just saved.
+   */
+  async recordMany(manager: EntityManager, inputs: RecordEvent[]): Promise<void> {
+    if (inputs.length === 0) {
+      return;
+    }
+    for (const input of inputs) {
+      requireOneSubject(input);
+    }
+
+    for (let i = 0; i < inputs.length; i += INSERT_CHUNK) {
+      await manager.insert(
+        TraceabilityEvent,
+        inputs
+          .slice(i, i + INSERT_CHUNK)
+          .map((input) => this.build(manager, input)),
+      );
+    }
+  }
+
+  /** The one construction both record() and recordMany() use. */
+  private build(manager: EntityManager, input: RecordEvent): TraceabilityEvent {
+    return manager.create(TraceabilityEvent, {
       item: input.item ?? null,
       batch: input.batch ?? null,
       type: input.type,
@@ -71,7 +120,6 @@ export class EventRecorder {
         : null,
       occurredAt: occurredAtOf(input.meta),
     });
-    return manager.save(TraceabilityEvent, event);
   }
 
   /**

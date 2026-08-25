@@ -14,6 +14,7 @@ import { ComplianceFinding } from '../entities/compliance-finding.entity';
 import { Assessment, resolveGoverning } from '../governing-licence';
 import { License } from '../entities/license.entity';
 import {
+  ComplianceFindingType,
   EnforcementMode,
   LicensedActivity,
   LicenseVerdict,
@@ -186,16 +187,72 @@ export class LicenseEnforcementService {
     return this.mode;
   }
 
+  /**
+   * Records that a production run went ahead while it was not eligible, and
+   * tells the licence holder (DR §24 invariant 9).
+   *
+   * This exists so that finding-writing stays in one place. `recordFinding()`
+   * and `notifyHolder()` are private, and they are private for a reason: a
+   * second writer would be a second answer to "what does the regulator see",
+   * and the two would drift. Manufacturing therefore calls this one method
+   * rather than learning how to file a finding of its own — and it is called
+   * only on the authoritative evaluation inside `ProductionService.create()`,
+   * never on the preview, which writes nothing at all.
+   *
+   * Exactly one finding and one round of notices per ineligible run. Under
+   * ADVISORY that is the whole enforcement: the order is created, the regulator
+   * sees the finding, and the lever the platform actually offers — suspend or
+   * revoke — stays with the regulator rather than with this code.
+   *
+   * The finding's type comes from the licence verdict where there is one to
+   * take it from. Where the licence is perfectly sound and the run failed for
+   * another reason — the product's category is outside what the licence covers,
+   * or the date requested falls after it expires — there is no verdict to map,
+   * so it is recorded as unlicensed activity and the detail says what actually
+   * happened. Inventing an enum member for it would be a schema change this
+   * contract does not authorise.
+   */
+  async recordIneligibleProduction(
+    organization: Organization,
+    facilityId: number | null,
+    action: string,
+    failures: string[],
+    actor?: User | null,
+  ): Promise<void> {
+    const activity = LicensedActivity.MANUFACTURING;
+    const assessment = await this.assess(organization.id, activity, facilityId);
+
+    const detail =
+      `${organization.name} is recorded as "${action}" while not eligible to: ` +
+      (failures.length > 0 ? failures.join(' ') : 'no reason was recorded.');
+
+    await this.recordFinding(organization, activity, action, assessment, actor, {
+      type: ComplianceFindingType.UNLICENSED_ACTIVITY,
+      detail: detail.slice(0, 1000),
+    });
+    await this.notifyHolder(organization, action, assessment, detail.slice(0, 1000));
+  }
+
   // ---------------------------------------------------------------- private
 
+  /**
+   * The one place a `ComplianceFinding` is written.
+   *
+   * `override` exists for the eligibility case, where the licence itself may be
+   * in perfect order and the run was refused for another reason: there is then
+   * no verdict to map to a finding type, and no refusal sentence worth writing
+   * from the verdict either. Everything else passes nothing and behaves exactly
+   * as it always has.
+   */
   private async recordFinding(
     organization: Organization,
     activity: LicensedActivity,
     action: string,
     assessment: Assessment,
     actor?: User | null,
+    override?: { type?: ComplianceFindingType; detail?: string },
   ): Promise<void> {
-    const type = findingFor(assessment.verdict);
+    const type = findingFor(assessment.verdict) ?? override?.type;
     if (!type) {
       return;
     }
@@ -208,7 +265,7 @@ export class LicenseEnforcementService {
         action,
         license: assessment.license,
         actor: actor ?? null,
-        detail: this.refusal(organization, action, assessment),
+        detail: override?.detail ?? this.refusal(organization, action, assessment),
       }),
     );
   }
@@ -224,6 +281,7 @@ export class LicenseEnforcementService {
     organization: Organization,
     action: string,
     assessment: Assessment,
+    message?: string,
   ): Promise<void> {
     try {
       const admins = await this.users.find({
@@ -238,7 +296,7 @@ export class LicenseEnforcementService {
           userId: admin.id,
           type: NotificationType.WARNING,
           title: 'Licence attention needed',
-          message: this.refusal(organization, action, assessment),
+          message: message ?? this.refusal(organization, action, assessment),
           module: 'licensing',
           actionUrl: '/licenses',
         });

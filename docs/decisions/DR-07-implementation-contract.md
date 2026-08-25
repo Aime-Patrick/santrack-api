@@ -299,6 +299,59 @@ export interface EligibilityResult {
   REVOKED is terminal in every mode, matching `check()`'s existing carve-out (`:104`).
 - Under `OFF`, `eligible` is still computed truthfully; `blocking` is always false.
 
+**Compliance overview (WU-7), frozen so the frontend never computes it.**
+
+Every field below is decided by the server. The browser renders them and derives
+nothing — no licence validity, no authorization state, no eligibility.
+
+```ts
+interface ComplianceOverview {
+  organization: {
+    id: number;
+    name: string;
+    status: 'PASS' | 'WARN' | 'FAIL';   // WARN covers provisional (D2)
+    message: string;                     // one sentence an operator can act on
+    licence: LicenceSummary | null;      // the governing organization-grained licence
+  };
+  facilities: {
+    id: number;
+    name: string;
+    code: string | null;
+    active: boolean;
+    status: 'PASS' | 'WARN' | 'FAIL';
+    message: string;
+    licence: LicenceSummary | null;      // site licence if any, else the one it inherits
+    inherited: boolean;                  // true when covered by the organization licence
+  }[];
+  products: {
+    id: number;
+    name: string;
+    sku: string;
+    status: 'PASS' | 'WARN';             // never FAIL in MVP — see OQ 5 and OQ 12
+    message: string;
+    categoryCode: string | null;
+  }[];
+  enforcementMode: 'OFF' | 'ADVISORY' | 'STRICT';
+  evaluatedAt: Date;
+}
+
+interface LicenceSummary {
+  id: number;
+  licenseNumber: string;
+  status: LicenseStatus;
+  verdict: LicenseVerdict;
+  grain: 'ORGANIZATION' | 'FACILITY';
+  provisional: boolean;
+  issuedOn: string | null;
+  expiresOn: string | null;
+}
+```
+
+`status` on a facility is the verdict of its **governing** licence resolved through
+`resolveGoverning` — the same resolver production eligibility uses, never a second reading
+of the same facts. `inherited` exists so the UI can say *"covered by the company licence"*
+rather than implying the site holds one of its own.
+
 **Endpoints**
 
 | Method | Path | Capability | Writes |

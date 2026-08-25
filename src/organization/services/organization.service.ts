@@ -9,6 +9,8 @@ import {
   TraceabilityRuleException,
 } from '../../common/errors';
 import { LicenseService } from '../../licensing/services/license.service';
+import { NotificationsService } from '../../notifications/services/notifications.service';
+import { NotificationType } from '../../notifications/entities/notification.entity';
 import { Product } from '../../product/entities/product.entity';
 import { CreateOrganizationDto } from '../dto/organization.dto';
 import {
@@ -46,6 +48,7 @@ export class OrganizationService {
     private readonly facilities: Repository<Facility>,
     private readonly sites: FacilityService,
     private readonly licenses: LicenseService,
+    private readonly notifications: NotificationsService,
     config: ConfigService,
   ) {
     this.provisionalDays = config.get<number>('licensing.provisionalDays') ?? 90;
@@ -122,6 +125,17 @@ export class OrganizationService {
      * must not cost someone their organization, which is already saved above.
      */
     await this.licenses.issueProvisional(organization, this.provisionalDays);
+
+    await this.notifications.create({
+      userId: actor.id,
+      type: NotificationType.INFO,
+      title: 'Welcome to SanTrack',
+      message:
+        `${organization.name} is set up. Check your compliance status to see ` +
+        'your provisional licence and facility details.',
+      module: 'compliance',
+      actionUrl: '/compliance',
+    });
 
     return organization;
   }

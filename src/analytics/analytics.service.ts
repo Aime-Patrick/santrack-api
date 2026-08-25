@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Not, Repository } from 'typeorm';
 import { TraceabilityRuleException } from '../common/errors';
 import { InventoryService } from '../inventory/services/inventory.service';
 import { TraceableItem } from '../item/entities/traceable-item.entity';
-import { ItemStatus } from '../item/item.enums';
+import { ItemStatus, NON_PHYSICAL_STATUSES } from '../item/item.enums';
 import { License, LicenseCategory } from '../licensing/entities/license.entity';
 import { LicenseStatus } from '../licensing/licensing.enums';
 import { ProductionOrder } from '../manufacturing/entities/production-order.entity';
@@ -422,9 +422,18 @@ export class AnalyticsService {
     );
   }
 
+  /**
+   * The identities an organization holds, and only those that name something
+   * real (DR-08). Every analytic below counts from this, so excluding minted
+   * but unproduced codes here is what keeps a ten thousand label print run out
+   * of every chart at once.
+   */
   private async itemsByOrg(organization: Organization): Promise<TraceableItem[]> {
     return this.items.find({
-      where: { holder: { id: organization.id } },
+      where: {
+        holder: { id: organization.id },
+        status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
+      },
     });
   }
 }

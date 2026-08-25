@@ -215,3 +215,85 @@ describe('capabilities conferred by regulatory standing', () => {
     }
   });
 });
+
+/**
+ * The ceiling each organization type may hold, pinned exactly (DR-09 WU-7).
+ *
+ * This file is the single source of truth for the whole platform - the browser
+ * keeps no copy, and /api/auth/me returns the resolved list - so these
+ * assertions are the specification rather than a check on it. A ceiling read
+ * through ORG_ADMIN is the ceiling itself: that role holds everything a
+ * business can do, so whatever survives the intersection is the limit.
+ */
+describe('what an organization type may hold at most', () => {
+  const ceilingOf = (type: OrganizationType) =>
+    capabilitiesFor(UserRole.ORG_ADMIN, type);
+
+  it('lets a retailer take a delivery', () => {
+    // The last mile of the chain. Without MOVE_STOCK the receive endpoint is
+    // refused and stock a distributor dispatched stays IN_TRANSIT under the
+    // distributor for ever, because nobody downstream can confirm it.
+    expect(ceilingOf(OrganizationType.RETAILER)).toEqual([
+      Capability.HANDLE_PACKAGING,
+      Capability.MOVE_STOCK,
+      Capability.SELL,
+      Capability.APPLY_LIFECYCLE,
+      Capability.MANAGE_CLIENTS,
+      Capability.VIEW_OPERATIONS,
+      Capability.MANAGE_USERS,
+    ]);
+  });
+
+  it('lets a shop take a delivery and write off what it finds broken', () => {
+    expect(ceilingOf(OrganizationType.SHOP)).toEqual([
+      Capability.HANDLE_PACKAGING,
+      Capability.MOVE_STOCK,
+      Capability.SELL,
+      Capability.APPLY_LIFECYCLE,
+      Capability.MANAGE_CLIENTS,
+      Capability.VIEW_OPERATIONS,
+      Capability.MANAGE_USERS,
+    ]);
+  });
+
+  it('leaves the warehouse unable to sell', () => {
+    // Widening the retail ceilings must not widen this one by accident: a
+    // warehouse holds other businesses' goods and has no commercial layer.
+    expect(ceilingOf(OrganizationType.WAREHOUSE)).toEqual([
+      Capability.HANDLE_PACKAGING,
+      Capability.MOVE_STOCK,
+      Capability.APPLY_LIFECYCLE,
+      Capability.MANAGE_LOGISTICS,
+      Capability.VIEW_OPERATIONS,
+      Capability.MANAGE_USERS,
+    ]);
+  });
+
+  it('lets nobody but a manufacturer mint an identity or run production', () => {
+    // The ceiling's original job, unchanged by DR-09. Minting an identity is a
+    // manufacturing claim; taking a delivery is not.
+    for (const type of [
+      OrganizationType.WAREHOUSE,
+      OrganizationType.DISTRIBUTOR,
+      OrganizationType.RETAILER,
+      OrganizationType.SHOP,
+    ]) {
+      expect(ceilingOf(type)).not.toContain(Capability.REGISTER_IDENTITY);
+      expect(ceilingOf(type)).not.toContain(Capability.RUN_PRODUCTION);
+    }
+    expect(ceilingOf(OrganizationType.MANUFACTURER)).toContain(
+      Capability.REGISTER_IDENTITY,
+    );
+    expect(ceilingOf(OrganizationType.MANUFACTURER)).toContain(
+      Capability.RUN_PRODUCTION,
+    );
+  });
+
+  it('gives an authority no operational capability at all', () => {
+    // A regulator supervises businesses; it does not move their stock.
+    expect(ceilingOf(OrganizationType.REGULATOR)).not.toContain(
+      Capability.MOVE_STOCK,
+    );
+    expect(ceilingOf(OrganizationType.REGULATOR)).not.toContain(Capability.SELL);
+  });
+});

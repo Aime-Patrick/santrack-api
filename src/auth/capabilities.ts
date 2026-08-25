@@ -61,6 +61,13 @@ export enum Capability {
   OVERSEE_INDUSTRIES = 'OVERSEE_INDUSTRIES',
 
   /**
+   * Screen licence applications, make decisions (approve/reject), and
+   * suspend, reinstate or revoke licences. Held by licensing authorities,
+   * distinct from MANAGE_RECALL which is about product batch recalls.
+   */
+  DECIDE_LICENCES = 'DECIDE_LICENCES',
+
+  /**
    * Acts on the platform itself rather than within one business: granting an
    * organization regulatory standing, editing the registry, and approving
    * licences. Held only by the platform operator, never by a customer's own
@@ -166,6 +173,117 @@ export const CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE: Partial<
 };
 
 /**
+ * The most an organization of this type may hold, whatever its staff's job
+ * titles say.
+ *
+ * Conferral alone was additive, which made an authority a superset of the
+ * businesses it supervises: a regulator's ORG_ADMIN held every operational
+ * capability the role carries - minting identities, running production,
+ * posting to the ledger, running payroll - and simply gained OVERSEE_INDUSTRIES
+ * on top. A licensing authority does not manufacture, and a screen full of
+ * production tools is the visible half of an API that would have accepted the
+ * work.
+ *
+ * Listed types are intersected with what the role grants; unlisted types are
+ * bounded by role alone, which is right for an ordinary trading business.
+ * SYSTEM_ADMIN is exempt: the platform operator is not a business, and their
+ * account may sit in any organization.
+ */
+export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
+  Record<OrganizationType, Capability[]>
+> = {
+  // ── Regulator ────────────────────────────────────────────────────────
+  // No operational capabilities. Supervises the industry, screens
+  // licence applications, manages recalls, manages its own staff.
+  [OrganizationType.REGULATOR]: [
+    Capability.VIEW_OPERATIONS,
+    Capability.OVERSEE_INDUSTRIES,
+    Capability.DECIDE_LICENCES,
+    Capability.MANAGE_RECALL,
+    Capability.MANAGE_USERS,
+  ],
+
+  // ── Manufacturer ─────────────────────────────────────────────────────
+  // No ceiling — the full operational set from role applies. Only
+  // manufacturers mint identities and run production.
+  // (Intentionally omitted: unlisted types fall through to role-based
+  // capabilities, and MANUFACTURER needs no cap.)
+
+  // ── Warehouse ────────────────────────────────────────────────────────
+  // Receives, stores, packs and ships. No identity minting, no
+  // production, no sales ledger.
+  [OrganizationType.WAREHOUSE]: [
+    Capability.HANDLE_PACKAGING,
+    Capability.MOVE_STOCK,
+    Capability.APPLY_LIFECYCLE,
+    Capability.MANAGE_LOGISTICS,
+    Capability.MANAGE_USERS,
+    Capability.VIEW_OPERATIONS,
+  ],
+
+  // ── Distributor ──────────────────────────────────────────────────────
+  // Buys and resells in bulk. Moves stock, manages clients, no
+  // manufacturing or identity minting.
+  [OrganizationType.DISTRIBUTOR]: [
+    Capability.HANDLE_PACKAGING,
+    Capability.MOVE_STOCK,
+    Capability.SELL,
+    Capability.MANAGE_CLIENTS,
+    Capability.APPLY_LIFECYCLE,
+    Capability.MANAGE_USERS,
+    Capability.VIEW_OPERATIONS,
+  ],
+
+  // ── Retailer ─────────────────────────────────────────────────────────
+  // Sells to consumers. No production, no identity minting, no
+  // logistics fleet.
+  //
+  // MOVE_STOCK is what lets a retailer confirm a delivery (DR-09 WU-7).
+  // Without it POST /api/transfers/:id/receive is refused, and goods a
+  // distributor dispatched sit IN_TRANSIT under the distributor for ever -
+  // the last mile of the chain could not be completed at all. The capability
+  // covers dispatch and internal relocation too, which is right: a retailer
+  // moves stock from its back room to its shelves and sends goods back up
+  // the chain when they are wrong.
+  [OrganizationType.RETAILER]: [
+    Capability.HANDLE_PACKAGING,
+    Capability.MOVE_STOCK,
+    Capability.SELL,
+    Capability.MANAGE_CLIENTS,
+    Capability.APPLY_LIFECYCLE,
+    Capability.MANAGE_USERS,
+    Capability.VIEW_OPERATIONS,
+  ],
+
+  // ── Shop ─────────────────────────────────────────────────────────────
+  // Smallest trading unit. Sells, receives, packs. No production, no
+  // identity minting, no logistics, no finance.
+  //
+  // MOVE_STOCK for the same reason as RETAILER above. APPLY_LIFECYCLE goes
+  // with it: a shop is where a bottle is found broken on the shelf, where a
+  // date is checked, and where a customer brings something back. Selling to
+  // consumers without being able to say "this one is damaged" would leave
+  // the shop's own stock permanently overstated (DR-09 WU-7).
+  [OrganizationType.SHOP]: [
+    Capability.HANDLE_PACKAGING,
+    Capability.MOVE_STOCK,
+    Capability.SELL,
+    Capability.MANAGE_CLIENTS,
+    Capability.APPLY_LIFECYCLE,
+    Capability.MANAGE_USERS,
+    Capability.VIEW_OPERATIONS,
+  ],
+
+  // ── Consumer ─────────────────────────────────────────────────────────
+  // Final buyer — scans QR codes, views verification. No business
+  // operations at all. (In practice consumers never hold a business
+  // account, but the ceiling exists as a safety net.)
+  [OrganizationType.CONSUMER]: [
+    Capability.VIEW_OPERATIONS,
+  ],
+};
+
+/**
  * Whether a role holds a capability on its own, before any organization
  * standing is taken into account.
  *
@@ -200,6 +318,21 @@ export function capabilitiesFor(
       CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE[organizationType] ?? [];
     for (const capability of conferred) {
       held.add(capability);
+    }
+  }
+
+  // The ceiling is a limit, not a grant: it can only remove. SYSTEM_ADMIN is
+  // exempt, having been given ALL above.
+  const ceiling =
+    role === UserRole.SYSTEM_ADMIN || !organizationType
+      ? null
+      : CAPABILITY_CEILING_BY_ORGANIZATION_TYPE[organizationType];
+  if (ceiling) {
+    const permitted = new Set(ceiling);
+    for (const capability of held) {
+      if (!permitted.has(capability)) {
+        held.delete(capability);
+      }
     }
   }
 
@@ -245,6 +378,8 @@ export const CAPABILITY_DESCRIPTIONS: Record<Capability, string> = {
     'Create, update and deactivate users within your own organization.',
   [Capability.OVERSEE_INDUSTRIES]:
     'Read the registry of businesses on the platform, their licences and compliance record.',
+  [Capability.DECIDE_LICENCES]:
+    'Screen licence applications, approve or reject, and suspend, reinstate or revoke licences.',
   [Capability.ADMINISTER_PLATFORM]:
     'Administer the platform itself: the registry, regulatory standing and licence approval.',
 };

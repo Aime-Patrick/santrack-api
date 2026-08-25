@@ -168,7 +168,9 @@ function describe(product: Product) {
      * @deprecated Read `categoryCode`.
      */
     category: product.category,
-    brand: product.brand,
+    brand: product.productBrand?.name ?? product.brand,
+    brandId: product.brandId,
+    brandCode: product.productBrand?.code ?? null,
     model: product.model,
     specification: product.specification,
     gtin: product.gtin,

@@ -1,5 +1,11 @@
 import { TraceableItem } from './entities/traceable-item.entity';
-import { ItemStatus, blocksSale, isTerminal } from './item.enums';
+import {
+  ItemStatus,
+  blocksSale,
+  existsPhysically,
+  isPreProduction,
+  isTerminal,
+} from './item.enums';
 
 describe('sale blocking (business rule 11)', () => {
   const blocked = [
@@ -10,6 +16,9 @@ describe('sale blocking (business rule 11)', () => {
     ItemStatus.DESTROYED,
     ItemStatus.SOLD,
     ItemStatus.RETURNED,
+    ItemStatus.GENERATED,
+    ItemStatus.ASSIGNED,
+    ItemStatus.CANCELLED,
   ];
 
   it.each(blocked)('refuses to sell %s stock', (status) => {
@@ -35,10 +44,63 @@ describe('sale blocking (business rule 11)', () => {
     expect(blocksSale(ItemStatus.RETURNED)).toBe(true);
   });
 
-  it('only destroyed is terminal', () => {
+  /**
+   * The reason this is an allowlist rather than a denylist. A status nobody
+   * thought about must refuse the sale, not permit it - the cost of forgetting
+   * one is a blocked sale somebody complains about, not ten thousand
+   * unproduced bottles sold.
+   */
+  it('refuses any status not explicitly declared sellable', () => {
+    const invented = 'SOME_STATUS_ADDED_LATER' as ItemStatus;
+    expect(blocksSale(invented)).toBe(true);
+  });
+
+  it('destroyed and cancelled are terminal', () => {
     expect(isTerminal(ItemStatus.DESTROYED)).toBe(true);
+    expect(isTerminal(ItemStatus.CANCELLED)).toBe(true);
     expect(isTerminal(ItemStatus.RECALLED)).toBe(false);
     expect(isTerminal(ItemStatus.SOLD)).toBe(false);
+  });
+});
+
+/**
+ * An identity is minted before the product it names exists (DR-08), so for
+ * part of its life the code is real and the bottle is not. Every count of
+ * stock depends on telling those apart.
+ */
+describe('identities that name no physical thing', () => {
+  const nothingExistsYet = [
+    ItemStatus.GENERATED,
+    ItemStatus.ASSIGNED,
+    ItemStatus.CANCELLED,
+  ];
+
+  it.each(nothingExistsYet)('has no physical product under %s', (status) => {
+    expect(existsPhysically(status)).toBe(false);
+  });
+
+  it('has a physical product once production confirms it', () => {
+    expect(existsPhysically(ItemStatus.ACTIVE)).toBe(true);
+  });
+
+  /**
+   * A destroyed bottle was a real bottle. A cancelled code never was, and the
+   * consumer scanning it has to be told a different thing.
+   */
+  it('separates a product that was destroyed from a code that never became one', () => {
+    expect(existsPhysically(ItemStatus.DESTROYED)).toBe(true);
+    expect(existsPhysically(ItemStatus.CANCELLED)).toBe(false);
+  });
+
+  it('counts generated and assigned codes as awaiting production', () => {
+    expect(isPreProduction(ItemStatus.GENERATED)).toBe(true);
+    expect(isPreProduction(ItemStatus.ASSIGNED)).toBe(true);
+  });
+
+  it('does not count a cancelled code as awaiting production', () => {
+    // It is finished, not pending: no run will ever produce it.
+    expect(isPreProduction(ItemStatus.CANCELLED)).toBe(false);
+    expect(isPreProduction(ItemStatus.ACTIVE)).toBe(false);
   });
 });
 

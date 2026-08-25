@@ -13,7 +13,9 @@ import {
 import { SequenceService } from '../../common/sequence.service';
 import { TraceableItem, today } from '../../item/entities/traceable-item.entity';
 import { registeredUnits } from '../../item/services/item.service';
+import { ProductionEligibilityDecision } from '../../licensing/entities/production-eligibility-decision.entity';
 import { LicenseEnforcementService } from '../../licensing/services/license-enforcement.service';
+import { ProductionEligibilityService } from '../../licensing/services/production-eligibility.service';
 import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { Product } from '../../product/entities/product.entity';
@@ -74,6 +76,12 @@ export class ProductionService {
     private readonly events: Repository<ProductionEvent>,
     private readonly sequences: SequenceService,
     private readonly licensing: LicenseEnforcementService,
+    /**
+     * Manufacturing asks whether a run is permitted; it never works the answer
+     * out for itself. A second implementation of a regulatory rule is how two
+     * answers to the same question come to exist (DR §24 invariant 10).
+     */
+    private readonly eligibility: ProductionEligibilityService,
     private readonly batches: BatchService,
     private readonly recorder: EventRecorder,
   ) {}
@@ -83,13 +91,26 @@ export class ProductionService {
   /**
    * Plans an order. A BOM snapshots its lines into allocations, so the plan
    * carries how much material it expects to need before a gram is issued.
+   *
+   * This is where DR-07 closes the enforcement hole it was written about: until
+   * now, planning a run consulted no licence at all. It does now, and the
+   * evaluation taken here — not the preview the screen showed a moment ago — is
+   * the authoritative one, because a licence can lapse between the two. The
+   * verdict is stored, immutably, and the order points at it; a regulator asking
+   * in two years why this run was permitted reads that record rather than
+   * watching today's rules re-run against today's licences.
+   *
+   * Refusal happens only when the verdict is `blocking`. Under the platform's
+   * default mode the order is created and a finding is written instead, which is
+   * the supervision the proposal describes rather than the gatekeeping it
+   * doesn't.
    */
   async create(
     organization: Organization,
     actor: User,
     dto: CreateProductionOrderDto,
   ): Promise<ProductionOrder> {
-    return this.dataSource.transaction(async (manager) => {
+    const planned = await this.dataSource.transaction(async (manager) => {
       const product = await manager.findOne(Product, { where: { id: dto.productId } });
       if (!product) {
         throw new NotFoundEntityException('Product', dto.productId);
@@ -131,6 +152,79 @@ export class ProductionService {
         );
       }
 
+      /**
+       * Resolved before the licence is consulted, because which site is
+       * producing decides which licence governs (D1): a site with its own
+       * licence stops relying on the company's, for better and for worse.
+       */
+      const facilityId = await this.resolveFacility(
+        manager,
+        organization,
+        dto.facilityId,
+      );
+
+      /**
+       * Judged against the day the run is *for*, not the day it is booked. A
+       * licence that is valid this morning and expires before the scheduled
+       * start does not cover the run, and this is where a manufacturer finds
+       * that out — while there is still time to renew.
+       */
+      const requestedDate = dto.scheduledStartOn ?? today();
+
+      const verdict = await this.eligibility.evaluate({
+        organizationId: organization.id,
+        facilityId,
+        productId: product.id,
+        requestedQuantity: dto.plannedQuantity,
+        requestedDate,
+      });
+
+      if (verdict.blocking) {
+        /**
+         * The failing checks travel with the refusal so the wizard can keep
+         * showing the list it was already showing, with the remedy links, rather
+         * than replacing it with a bare error. 409, not 400: the request was
+         * well formed — the world is not in the state it needs to be in.
+         */
+        const failures = verdict.checks.filter((check) => check.status === 'FAIL');
+        throw new TraceabilityRuleException(
+          `${organization.name} cannot start this production run. ` +
+            failures.map((check) => check.message).join(' '),
+          {
+            eligible: verdict.eligible,
+            blocking: verdict.blocking,
+            enforcementMode: verdict.enforcementMode,
+            evaluatedAt: verdict.evaluatedAt.toISOString(),
+            checks: verdict.checks,
+            reliedOn: verdict.reliedOn,
+            rulesetVersion: verdict.rulesetVersion,
+          },
+        );
+      }
+
+      /**
+       * Inserted in the same transaction as the order, so an order without its
+       * justification cannot exist and a justification without its order cannot
+       * either (DR §24 invariant 6). Written once and never touched again
+       * (invariants 15, 16).
+       */
+      const decision = await manager.save(
+        manager.create(ProductionEligibilityDecision, {
+          organizationId: organization.id,
+          facilityId,
+          productId: product.id,
+          requestedQuantity: dto.plannedQuantity,
+          requestedDate,
+          eligible: verdict.eligible,
+          blocking: verdict.blocking,
+          enforcementMode: verdict.enforcementMode,
+          checks: verdict.checks,
+          reliedOn: verdict.reliedOn,
+          rulesetVersion: verdict.rulesetVersion,
+          evaluatedBy: actor ?? null,
+        }),
+      );
+
       const order = await manager.save(
         manager.create(ProductionOrder, {
           orderNumber: await this.nextNumber(manager),
@@ -138,7 +232,8 @@ export class ProductionService {
           product,
           bom,
           machine,
-          facilityId: await this.resolveFacility(manager, organization, dto.facilityId),
+          facilityId,
+          eligibilityDecisionId: decision.id,
           plannedQuantity: dto.plannedQuantity,
           producedQuantity: 0,
           status: ProductionOrderStatus.PLANNED,
@@ -195,8 +290,34 @@ export class ProductionService {
         notes: dto.notes ?? null,
       });
 
-      return order;
+      return { order, verdict, facilityId };
     });
+
+    /**
+     * Written after the transaction commits, and only then.
+     *
+     * A finding is a statement that something happened. Filing it inside the
+     * transaction would leave one behind for a run that rolled back and never
+     * existed, and a regulator's evidence trail is the last place to put a
+     * record of something that did not occur.
+     *
+     * Exactly one finding and one round of notices per ineligible run (DR §24
+     * invariant 9), and the writing itself stays inside the licensing module —
+     * manufacturing asks, it does not file.
+     */
+    if (!planned.verdict.eligible) {
+      await this.licensing.recordIneligibleProduction(
+        organization,
+        planned.facilityId,
+        `plan production order ${planned.order.orderNumber}`,
+        planned.verdict.checks
+          .filter((check) => check.status === 'FAIL')
+          .map((check) => check.message),
+        actor,
+      );
+    }
+
+    return planned.order;
   }
 
   /** Opens the order for work. This is the moment production starts. */

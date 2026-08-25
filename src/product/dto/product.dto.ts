@@ -3,6 +3,8 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 import { Symbology } from '../../barcode/symbology';
@@ -39,6 +41,22 @@ export class CreateProductDto {
   @IsString()
   category?: string;
 
+  /**
+   * The mark this is sold under, from the organization's own brands.
+   *
+   * Supersedes the free-text `brand` for the same reason `categoryId`
+   * superseded `category`: "Mützig" typed twice is two brands, and a dropdown
+   * of marks the business already registered is one fewer thing for whoever
+   * fills in this form to get wrong.
+   */
+  @IsOptional()
+  @IsInt({ message: 'Choose a brand from your own list' })
+  brandId?: number;
+
+  /**
+   * @deprecated Free-text brand. Kept so an older client sending it gets a
+   * clear refusal rather than a silently ignored field.
+   */
   @IsOptional()
   @IsString()
   brand?: string;
@@ -46,6 +64,35 @@ export class CreateProductDto {
   @IsOptional()
   @IsString()
   model?: string;
+
+  /**
+   * What one unit of stock is called — BOTTLE, KG, LITRE (DR-09).
+   *
+   * Display and order entry only. Nothing that counts or reserves stock reads
+   * it. Left blank, quantities show as bare numbers, which is what every
+   * existing product does today.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  baseUnit?: string;
+
+  /**
+   * The one pack this is also sold in — CARTON, BAG, CRATE, PALLET.
+   *
+   * Send with `unitsPerPack` or not at all. One pack, one conversion: a second
+   * sellable tier is a decision, not a field.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  packUnit?: string;
+
+  /** How many base units one pack nominally holds. At least 2. */
+  @IsOptional()
+  @IsInt({ message: 'Units per pack is a whole number' })
+  @Min(2, { message: 'A pack holds at least 2 units — a pack of one is just the unit' })
+  unitsPerPack?: number;
 
   @IsOptional()
   @IsString()

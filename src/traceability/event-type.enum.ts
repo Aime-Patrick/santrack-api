@@ -29,8 +29,27 @@ export enum EventType {
    */
   PRODUCED_QUANTITY_AMENDED = 'PRODUCED_QUANTITY_AMENDED',
 
+  // --- Identity-level: the life of a code before it names a product (DR-08).
+  /**
+   * A code was minted into a pool. Nothing has been produced: this records
+   * that the identity now exists and may be printed, and nothing more.
+   */
+  IDENTITY_GENERATED = 'IDENTITY_GENERATED',
+  /** A minted code was allocated to a production order. Still not a product. */
+  IDENTITY_ASSIGNED = 'IDENTITY_ASSIGNED',
+  /**
+   * A code will never name a product - the unit failed, or the label was never
+   * used. Terminal, and never deleted: a cancelled code has to stay
+   * answerable, so that scanning one in the market reports it as invalid
+   * rather than as unknown.
+   */
+  IDENTITY_CANCELLED = 'IDENTITY_CANCELLED',
+
   // --- Item-level: everything from identity assignment onward.
-  /** Identity created at the point of manufacture. */
+  /**
+   * The identity became a real product. Written when production confirms the
+   * unit, not when the code was minted - minting a code makes no bottle.
+   */
   MANUFACTURED = 'MANUFACTURED',
   /** Identity registered for a container. */
   PACKAGE_CREATED = 'PACKAGE_CREATED',

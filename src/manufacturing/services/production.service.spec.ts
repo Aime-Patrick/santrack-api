@@ -79,7 +79,24 @@ function harness(options: {
     }),
   } as unknown as EventRecorder;
 
-  const licensing = { checkOwnTrade: jest.fn().mockResolvedValue(undefined) };
+  const licensing = {
+    checkOwnTrade: jest.fn().mockResolvedValue(undefined),
+    recordIneligibleProduction: jest.fn().mockResolvedValue(undefined),
+  };
+
+  // Planning a run now asks whether it is permitted (DR-07 WU-6). These paths
+  // are completion and amendment, which do not, so the answer is a clean one.
+  const eligibility = {
+    evaluate: jest.fn().mockResolvedValue({
+      eligible: true,
+      blocking: false,
+      enforcementMode: 'ADVISORY',
+      evaluatedAt: new Date(),
+      checks: [],
+      reliedOn: { licenseIds: [], licenseNumbers: [], categoryCodes: [] },
+      rulesetVersion: 'DR07-MVP-1',
+    }),
+  };
 
   const service = new ProductionService(
     dataSource,
@@ -88,11 +105,22 @@ function harness(options: {
     {} as never,
     {} as never,
     licensing as never,
+    eligibility as never,
     batches,
     recorder,
   );
 
-  return { service, manager, batches, recorder, productionEvents, traceEvents, statusChanges };
+  return {
+    service,
+    manager,
+    batches,
+    recorder,
+    licensing,
+    eligibility,
+    productionEvents,
+    traceEvents,
+    statusChanges,
+  };
 }
 
 const ORG = { id: 1 } as never;

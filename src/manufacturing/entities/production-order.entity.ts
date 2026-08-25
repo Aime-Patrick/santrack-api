@@ -101,6 +101,22 @@ export class ProductionOrder {
 
   @Column({ name: 'facility_id', type: 'int', nullable: true })
   facilityId: number | null;
+
+  /**
+   * The eligibility decision that permitted this run (DR-07 §5 M2).
+   *
+   * Held as a plain id rather than a relation on purpose: the decision lives in
+   * the licensing module, and manufacturing reaching into the licence tables to
+   * work out for itself whether a run is permitted is the thing DR §24
+   * invariant 10 exists to prevent. The order records *which* decision it was
+   * created under; reading that decision is licensing's job.
+   *
+   * Null on every order created before DR-07, and never backfilled. They were
+   * made before any eligibility decision existed, and inventing one for them
+   * would fabricate an audit record.
+   */
+  @Column({ name: 'eligibility_decision_id', type: 'bigint', nullable: true })
+  eligibilityDecisionId: string | null;
 }
 
 /**

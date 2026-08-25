@@ -74,6 +74,8 @@ describe('licence queries after M1', () => {
       {} as never,
       { next: jest.fn().mockResolvedValue(1) } as never,
       {} as never,
+      {} as never,
+      {} as never,
     );
 
     return { instance, manager, saved };

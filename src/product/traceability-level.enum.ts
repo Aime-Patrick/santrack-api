@@ -39,3 +39,28 @@ export function stricter(
 ): TraceabilityLevel {
   return TRACEABILITY_STRICTNESS[a] >= TRACEABILITY_STRICTNESS[b] ? a : b;
 }
+
+/**
+ * Whether a pool of identities is a meaningful thing to mint for this level
+ * (DR-09).
+ *
+ * A pool is a print run of labels, and a label goes on one thing. That only
+ * says something true when one identity names one unit - which is SERIAL and
+ * nothing else. Ten thousand codes minted for a BATCH-traced lot would come
+ * back as ten thousand identities each claiming a single pot, contradicting
+ * the catalogue entry that says the whole lot is one identity.
+ *
+ * The check exists because the two stock-in doors disagreed about what this
+ * enum means. `registerUnits` honours it through `unitsPerIdentity`; the pool
+ * mints `quantity: 1` unconditionally and never reads it, so the same product
+ * got different granularity depending on which door its stock came through,
+ * and nothing warned anybody.
+ *
+ * Refusing is deliberate rather than teaching the pool to split a run. That
+ * would be a second implementation of DR-01's rule, free to drift from the
+ * first - and the pool has no run to split against at minting time anyway,
+ * because a pool is requested before any production order exists (DR-08).
+ */
+export function permitsIdentityPool(level: TraceabilityLevel): boolean {
+  return level === TraceabilityLevel.SERIAL;
+}

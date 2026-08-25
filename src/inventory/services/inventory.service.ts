@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
 import { TraceableItem } from '../../item/entities/traceable-item.entity';
-import { ItemStatus } from '../../item/item.enums';
+import { ItemStatus, NON_PHYSICAL_STATUSES } from '../../item/item.enums';
 import { ItemService } from '../../item/services/item.service';
 import { Location } from '../../location/entities/location.entity';
 import { Organization } from '../../organization/entities/organization.entity';
@@ -84,6 +84,17 @@ export class InventoryService {
       .addSelect('SUM(i.quantity)', 'units')
       .addSelect('COUNT(i.id)', 'identities')
       .where('i.holder_id = :organizationId', { organizationId: organization.id })
+      /**
+       * Codes that name no physical thing (DR-08). A null holder already keeps
+       * a freshly minted pool out of this query, so this is the second lock on
+       * the same door - and the one that still holds if a later change ever
+       * gives a pre-production identity a holder. Reporting ten thousand
+       * printed labels as ten thousand bottles is the single worst thing this
+       * table could say.
+       */
+      .andWhere('i.status NOT IN (:...nonPhysical)', {
+        nonPhysical: NON_PHYSICAL_STATUSES,
+      })
       .andWhere(
         'NOT EXISTS (SELECT 1 FROM traceable_items c WHERE c.parent_id = i.id)',
       )

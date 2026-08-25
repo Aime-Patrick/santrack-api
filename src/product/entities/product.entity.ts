@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Symbology } from '../../barcode/symbology';
+import { Brand } from './brand.entity';
 import { ProductCategory } from './product-category.entity';
 import { TraceabilityLevel } from '../traceability-level.enum';
 
@@ -65,6 +66,14 @@ export class Product {
   @Column({ name: 'category_id', type: 'int', nullable: true })
   categoryId: number | null;
 
+  /** The mark it is sold under, from the organization's own brands. */
+  @ManyToOne(() => Brand, { nullable: true, eager: true })
+  @JoinColumn({ name: 'brand_id' })
+  productBrand: Brand | null;
+
+  @Column({ name: 'brand_id', type: 'int', nullable: true })
+  brandId: number | null;
+
   /**
    * How finely this product is traced (DR-01).
    *
@@ -81,6 +90,48 @@ export class Product {
     default: TraceabilityLevel.SERIAL,
   })
   traceabilityLevel: TraceabilityLevel;
+
+  /**
+   * What one unit of `TraceableItem.quantity` is, in words (DR-09).
+   *
+   * A quantity column with no unit is a number with no noun: stock said "2,016"
+   * and left the reader to guess bottles, litres or cases. `RawMaterial` has
+   * carried `unit_of_measure` since the beginning; the catalogue simply never
+   * adopted it.
+   *
+   * Display and order entry only. It is **not** stock truth and nothing that
+   * counts, values or reserves stock reads it — those all sum
+   * `TraceableItem.quantity`, which is what it has always been. Null means the
+   * screens show a bare number, exactly as they do today.
+   */
+  @Column({ name: 'base_unit', type: 'varchar', nullable: true })
+  baseUnit: string | null;
+
+  /**
+   * The one pack this product is also sold in — a carton, bag, crate or pallet.
+   *
+   * Deliberately singular. Selling a bottle, a carton *and* a pallet as three
+   * tiers is a unit-of-measure engine, and DR-09 keeps this to one conversion
+   * so the arithmetic stays somewhere a person can see all of it. A second tier
+   * is a decision, not a column added quietly later.
+   *
+   * Set together with {@link unitsPerPack} or not at all: a pack with no size
+   * cannot be converted, and a size with no pack has nothing to name.
+   */
+  @Column({ name: 'pack_unit', type: 'varchar', nullable: true })
+  packUnit: string | null;
+
+  /**
+   * How many {@link baseUnit} one {@link packUnit} nominally holds.
+   *
+   * Nominal, and that word is load-bearing. A real carton's quantity comes from
+   * its children through `refreshQuantities()`, and the last carton off a run
+   * legitimately holds fewer than a full pack. This number exists so an order
+   * for 2,000 bottles can be quoted as 84 cartons *before* any stock exists to
+   * measure — which is the one thing the cartons themselves cannot tell you.
+   */
+  @Column({ name: 'units_per_pack', type: 'int', nullable: true })
+  unitsPerPack: number | null;
 
   @Column({ type: 'varchar', nullable: true })
   brand: string | null;

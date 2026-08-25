@@ -106,6 +106,33 @@ export class LicenseController {
     };
   }
 
+  /**
+   * The applicant's own checklist: what is already attached to this licence.
+   *
+   * The regulator has had this since review existed; the holder never did,
+   * which left the Continue Application dialog asking for documents it could
+   * not see were already there. Ownership is checked in the service - the
+   * capability says a business may read its paperwork, `documentsOfOwn` says
+   * it is theirs to read.
+   */
+  @Get(':id/documents')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async myDocuments(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return (await this.licenses.documentsOfOwn(organization, id)).map(
+      (document) => ({
+        id: document.id,
+        documentType: document.documentType,
+        filename: document.filename,
+        contentType: document.contentType,
+        sizeBytes: document.sizeBytes,
+        uploadedAt: document.uploadedAt,
+      }),
+    );
+  }
+
   @Post(':id/submit')
   @HttpCode(200)
   @RequireCapability(Capability.MANAGE_CATALOG)
@@ -115,6 +142,17 @@ export class LicenseController {
     @Param('id', ParseIntPipe) id: number,
   ) {
     return describe(await this.licenses.submit(organization, actor, id));
+  }
+
+  @Post(':id/cancel')
+  @HttpCode(200)
+  @RequireCapability(Capability.MANAGE_CATALOG)
+  async cancel(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return describe(await this.licenses.cancel(organization, actor, id));
   }
 
   @Post(':id/renew')
@@ -129,8 +167,11 @@ export class LicenseController {
 
   @Get(':id/history')
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async history(@Param('id', ParseIntPipe) id: number) {
-    return (await this.licenses.historyOf(id)).map((event) => ({
+  async history(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return (await this.licenses.historyOfOwn(organization, id)).map((event) => ({
       id: event.id,
       type: event.type,
       fromStatus: event.fromStatus,
@@ -213,7 +254,7 @@ export class LicenseReviewController {
 
   @Post(':id/review')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_RECALL)
+  @RequireCapability(Capability.DECIDE_LICENCES)
   async startReview(
     @ActingOrg() regulator: Organization,
     @CurrentUser() actor: User,
@@ -224,7 +265,7 @@ export class LicenseReviewController {
 
   @Post(':id/decision')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_RECALL)
+  @RequireCapability(Capability.DECIDE_LICENCES)
   async decide(
     @ActingOrg() regulator: Organization,
     @CurrentUser() actor: User,
@@ -236,7 +277,7 @@ export class LicenseReviewController {
 
   @Post(':id/suspend')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_RECALL)
+  @RequireCapability(Capability.DECIDE_LICENCES)
   async suspend(
     @ActingOrg() regulator: Organization,
     @CurrentUser() actor: User,
@@ -248,7 +289,7 @@ export class LicenseReviewController {
 
   @Post(':id/reinstate')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_RECALL)
+  @RequireCapability(Capability.DECIDE_LICENCES)
   async reinstate(
     @ActingOrg() regulator: Organization,
     @CurrentUser() actor: User,
@@ -262,7 +303,7 @@ export class LicenseReviewController {
 
   @Post(':id/revoke')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_RECALL)
+  @RequireCapability(Capability.DECIDE_LICENCES)
   async revoke(
     @ActingOrg() regulator: Organization,
     @CurrentUser() actor: User,
@@ -272,9 +313,23 @@ export class LicenseReviewController {
     return describe(await this.licenses.revoke(regulator, actor, id, dto.reason));
   }
 
+  /**
+   * A licence's paperwork, for screening.
+   *
+   * Standing is checked here for the same reason `queue` checks it: the
+   * capability is held by every business that can view its own operations, so
+   * without this a competitor could list another company's certificates by
+   * licence id. Only the filenames were ever exposed - `readDocument` has
+   * always checked ownership before handing back bytes - but a filename is
+   * enough to say who a rival banks with.
+   */
   @Get(':id/documents')
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async documents(@Param('id', ParseIntPipe) id: number) {
+  async documents(
+    @ActingOrg() regulator: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    requireRegulatorStanding(regulator, "Another business's certificates");
     return (await this.licenses.documentsOf(id)).map((document) => ({
       id: document.id,
       documentType: document.documentType,
@@ -319,10 +374,13 @@ function describe(license: License) {
  * Regulatory standing, checked at the controller for the cross-organization
  * reads that have no service-side owner to check it for them.
  */
-function requireRegulatorStanding(organization: Organization): void {
+function requireRegulatorStanding(
+  organization: Organization,
+  subject = 'Compliance findings across businesses',
+): void {
   if (organization.type !== OrganizationType.REGULATOR) {
     throw new TraceabilityRuleException(
-      'Compliance findings across businesses are available to licensing authorities only',
+      `${subject} are available to licensing authorities only`,
     );
   }
 }

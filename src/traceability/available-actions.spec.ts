@@ -8,6 +8,8 @@ import { ItemAction, availableActions } from './available-actions';
 
 const warehouse = { id: 1, name: 'Kigali Warehouse' } as Organization;
 const shop = { id: 2, name: 'Nyabugogo Shop' } as Organization;
+const manufacturer = { id: 3, name: 'Test Manufacturer', type: OrganizationType.MANUFACTURER } as Organization;
+const retailer = { id: 4, name: 'Test Retailer', type: OrganizationType.RETAILER } as Organization;
 
 /** A unit sitting in the warehouse's own hands, unless said otherwise. */
 function unit(overrides: Partial<TraceableItem> = {}): TraceableItem {
@@ -44,7 +46,7 @@ function actionsFor(
   return availableActions({
     item,
     organization,
-    capabilities: capabilitiesFor(role, OrganizationType.WAREHOUSE),
+    capabilities: capabilitiesFor(role, (organization as any).type ?? OrganizationType.WAREHOUSE),
   });
 }
 
@@ -76,7 +78,9 @@ describe('what a role is even shown', () => {
   });
 
   it('offers an organization administrator the full set', () => {
-    const actions = actionsFor(container({ sealState: SealState.OPEN }), UserRole.ORG_ADMIN);
+    // Manufacturer has no capability ceiling, so ORG_ADMIN holds every
+    // operational capability. Other org types (e.g. WAREHOUSE) cap SELL.
+    const actions = actionsFor(container({ sealState: SealState.OPEN }), UserRole.ORG_ADMIN, manufacturer);
     expect(actions.map((a) => a.action)).toEqual(
       expect.arrayContaining([
         ItemAction.PRINT_LABEL,
@@ -164,7 +168,7 @@ describe('an item inside a container', () => {
   });
 
   it('cannot be sold on its own', () => {
-    const sell = find(boxed, UserRole.SALES_OFFICER, ItemAction.SELL);
+    const sell = find(boxed, UserRole.SALES_OFFICER, ItemAction.SELL, retailer);
     expect(sell?.available).toBe(false);
     expect(sell?.reason).toContain('Take it out');
   });
@@ -225,13 +229,13 @@ describe('selling', () => {
     [ItemStatus.RESERVED, 'sales order'],
     [ItemStatus.RETURNED, 'not been inspected'],
   ])('refuses to sell %s stock and says why', (status, expected) => {
-    const sell = find(unit({ status }), UserRole.SALES_OFFICER, ItemAction.SELL);
+    const sell = find(unit({ status }), UserRole.SALES_OFFICER, ItemAction.SELL, retailer);
     expect(sell?.available).toBe(false);
     expect(sell?.reason).toContain(expected);
   });
 
   it('sells active stock in hand', () => {
-    expect(find(unit(), UserRole.SALES_OFFICER, ItemAction.SELL)?.available).toBe(true);
+    expect(find(unit({ holder: retailer }), UserRole.SALES_OFFICER, ItemAction.SELL, retailer)?.available).toBe(true);
   });
 });
 
@@ -240,14 +244,15 @@ describe('recall', () => {
     // A recall follows the batch wherever it went. Requiring custody would
     // make it useless - the dangerous stock is precisely the stock that left.
     const sold = unit({ holder: shop, status: ItemStatus.SOLD });
-    expect(
-      find(sold, UserRole.QUALITY_OFFICER, ItemAction.RECALL_BATCH, warehouse)?.available,
-    ).toBe(true);
+    // The caller org is manufacturer (no ceiling) — recall does not require
+    // custody, so the held-by-shop does not block it.
+    const recall = find(sold, UserRole.QUALITY_OFFICER, ItemAction.RECALL_BATCH, manufacturer);
+    expect(recall?.available).toBe(true);
   });
 
   it('has nothing to act on when the identity belongs to no batch', () => {
     const batchless = unit({ batch: null });
-    const recall = find(batchless, UserRole.QUALITY_OFFICER, ItemAction.RECALL_BATCH);
+    const recall = find(batchless, UserRole.QUALITY_OFFICER, ItemAction.RECALL_BATCH, manufacturer);
     expect(recall?.available).toBe(false);
   });
 });

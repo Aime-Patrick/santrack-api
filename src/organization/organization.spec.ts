@@ -67,6 +67,7 @@ function service(organization: Record<string, unknown> | null) {
     listFor: jest.fn().mockResolvedValue([]),
     issueProvisional: jest.fn().mockResolvedValue(null),
   };
+  const notifications = { create: jest.fn().mockResolvedValue({}) };
   const config = { get: jest.fn().mockReturnValue(90) };
 
   return {
@@ -77,6 +78,7 @@ function service(organization: Record<string, unknown> | null) {
       facilities as never,
       sites as never,
       licenses as never,
+      notifications as never,
       config as never,
     ),
     organizations,
@@ -84,6 +86,7 @@ function service(organization: Record<string, unknown> | null) {
     facilities,
     sites,
     licenses,
+    notifications,
   };
 }
 
@@ -216,6 +219,19 @@ describe('creating an organization', () => {
 
     expect(licenses.issueProvisional).toHaveBeenCalledTimes(1);
     expect(licenses.issueProvisional.mock.calls[0][1]).toBe(90);
+  });
+
+  it('sends a welcome notification pointing to compliance', async () => {
+    const { instance, notifications } = service(null);
+
+    await instance.create(actor(), dto);
+
+    expect(notifications.create).toHaveBeenCalledTimes(1);
+    const call = notifications.create.mock.calls[0][0];
+    expect(call.userId).toBe(5);
+    expect(call.title).toBe('Welcome to SanTrack');
+    expect(call.module).toBe('compliance');
+    expect(call.actionUrl).toBe('/compliance');
   });
 
   it('refuses a second organization for someone who already acts for one', async () => {

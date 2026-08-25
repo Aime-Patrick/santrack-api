@@ -1,10 +1,15 @@
+import { User } from '../auth/entities/user.entity';
 import { TraceabilityRuleException } from '../common/errors';
+import { Organization } from '../organization/entities/organization.entity';
 import { Product } from '../product/entities/product.entity';
 import {
   TRACEABILITY_STRICTNESS,
   TraceabilityLevel,
+  permitsIdentityPool,
   stricter,
 } from '../product/traceability-level.enum';
+import { PoolStatus } from './entities/identity-pool.entity';
+import { IdentityPoolService } from './services/identity-pool.service';
 import { unitsPerIdentity } from './services/item.service';
 
 const product = (level: TraceabilityLevel) =>
@@ -123,6 +128,115 @@ describe('strictness ordering', () => {
     expect(stricter(TraceabilityLevel.PACKAGE, TraceabilityLevel.PACKAGE)).toBe(
       TraceabilityLevel.PACKAGE,
     );
+  });
+});
+
+/**
+ * DR-09 WU-1. The two stock-in doors disagreed: `registerUnits` honours the
+ * product's level through `unitsPerIdentity`, while the pool mints
+ * `quantity: 1` unconditionally and never reads it. A pool is a print run of
+ * labels, so it is only truthful for a product where one identity is one unit.
+ */
+describe('which products may have a pool of codes minted', () => {
+  it('allows SERIAL, where one code really does name one thing', () => {
+    expect(permitsIdentityPool(TraceabilityLevel.SERIAL)).toBe(true);
+  });
+
+  it('refuses BATCH, where one identity carries the whole lot', () => {
+    // Ten thousand codes for a lot the catalogue says is one identity would
+    // hand back ten thousand contradictions of that entry.
+    expect(permitsIdentityPool(TraceabilityLevel.BATCH)).toBe(false);
+  });
+
+  it('refuses PACKAGE, where one identity carries a pack', () => {
+    expect(permitsIdentityPool(TraceabilityLevel.PACKAGE)).toBe(false);
+  });
+
+  it('has an answer for every level, so a new one cannot arrive unconsidered', () => {
+    for (const level of Object.values(TraceabilityLevel)) {
+      expect(typeof permitsIdentityPool(level)).toBe('boolean');
+    }
+  });
+});
+
+/**
+ * The guard at the call site. Asserted separately from the predicate because
+ * the bug being closed was not a wrong answer - it was that nothing asked the
+ * question at all.
+ */
+describe('requesting a pool', () => {
+  const ORG = { id: 1, name: 'Akagera Foods Ltd' } as Organization;
+  const ACTOR = { id: 7 } as User;
+
+  function harness(level: TraceabilityLevel) {
+    const minted: unknown[] = [];
+    const saved = { id: 42 };
+
+    const service = new IdentityPoolService(
+      {} as never,
+      {
+        create: jest.fn((data: unknown) => data),
+        save: jest.fn((data: unknown) => {
+          minted.push(data);
+          return Promise.resolve(saved);
+        }),
+      } as never,
+      {} as never,
+      {
+        findOne: jest.fn().mockResolvedValue({
+          id: 3,
+          name: 'Yogurt 500ml',
+          organizationId: ORG.id,
+          traceabilityLevel: level,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+    );
+
+    // fill() runs unawaited in the background and would reach a database.
+    // Only request()'s own decision is under test here.
+    jest.spyOn(service, 'fill').mockResolvedValue(undefined as never);
+
+    return { service, minted };
+  }
+
+  it('refuses a BATCH-traced product, and says why', async () => {
+    const { service, minted } = harness(TraceabilityLevel.BATCH);
+
+    await expect(
+      service.request(ORG, ACTOR, { productId: 3, count: 10_000 } as never),
+    ).rejects.toThrow(TraceabilityRuleException);
+
+    // Nothing was written. A refused request leaves no half-made pool behind.
+    expect(minted).toHaveLength(0);
+  });
+
+  it('refuses a PACKAGE-traced product', async () => {
+    const { service } = harness(TraceabilityLevel.PACKAGE);
+
+    await expect(
+      service.request(ORG, ACTOR, { productId: 3, count: 500 } as never),
+    ).rejects.toThrow(/cannot say what it means/);
+  });
+
+  it('still accepts a SERIAL product, unchanged', async () => {
+    // The behaviour every existing pool depends on. WU-1 narrows what may be
+    // requested; it must not alter what happens when the answer is yes.
+    const { service, minted } = harness(TraceabilityLevel.SERIAL);
+
+    const pool = await service.request(ORG, ACTOR, {
+      productId: 3,
+      count: 10_000,
+    } as never);
+
+    expect(pool.id).toBe(42);
+    expect(minted).toHaveLength(1);
+    expect(minted[0]).toMatchObject({
+      organizationId: ORG.id,
+      requestedCount: 10_000,
+      status: PoolStatus.GENERATING,
+    });
   });
 });
 

@@ -9,9 +9,19 @@ import { HttpException, HttpStatus } from '@nestjs/common';
  * state it needs to be in.
  */
 export class TraceabilityRuleException extends HttpException {
-  constructor(message: string) {
+  /**
+   * `detail` carries whatever the caller needs in order to *act* on the
+   * refusal, alongside the sentence explaining it. `DomainExceptionFilter`
+   * passes unknown keys through untouched, so they arrive at the top level of
+   * the 409 body.
+   *
+   * A production run refused on eligibility uses it to carry the whole check
+   * list, so the screen that was showing those checks a moment ago can keep
+   * showing them instead of falling back to a bare error banner.
+   */
+  constructor(message: string, detail?: Record<string, unknown>) {
     super(
-      { status: 409, message, timestamp: new Date().toISOString() },
+      { status: 409, message, timestamp: new Date().toISOString(), ...detail },
       HttpStatus.CONFLICT,
     );
   }
