@@ -2,6 +2,21 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailProvider, SendEmailOptions } from './providers/email-provider.interface';
 import { SmtpProvider } from './providers/smtp.provider';
+import { UserRole } from '../auth/user-role.enum';
+
+const ROLE_LABELS: Record<UserRole, string> = {
+  [UserRole.SYSTEM_ADMIN]: 'System Admin',
+  [UserRole.ORG_ADMIN]: 'Org Admin',
+  [UserRole.PRODUCTION_MANAGER]: 'Production Manager',
+  [UserRole.PRODUCTION_OFFICER]: 'Production Officer',
+  [UserRole.WAREHOUSE_MANAGER]: 'Warehouse Manager',
+  [UserRole.WAREHOUSE_OFFICER]: 'Warehouse Officer',
+  [UserRole.QUALITY_OFFICER]: 'Quality Officer',
+  [UserRole.LOGISTICS_OFFICER]: 'Logistics Officer',
+  [UserRole.SALES_OFFICER]: 'Sales Officer',
+  [UserRole.MANAGEMENT]: 'Management',
+  [UserRole.AUDITOR]: 'Auditor',
+};
 
 @Injectable()
 export class EmailService implements OnModuleInit {
@@ -41,9 +56,13 @@ export class EmailService implements OnModuleInit {
     const verificationUrl = `${baseUrl}/verify-email?token=${token}`;
     await this.send({
       to,
-      subject: 'Verify Your Email - SANTRACK',
+      subject: 'Verify your email — SANTRACK',
       template: 'verify-email',
-      data: { verificationUrl, expiresIn: '24 hours' },
+      data: {
+        title: 'Verify your email',
+        verificationUrl,
+        expiresIn: '24 hours',
+      },
     });
   }
 
@@ -51,9 +70,13 @@ export class EmailService implements OnModuleInit {
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
     await this.send({
       to,
-      subject: 'Reset Your Password - SANTRACK',
+      subject: 'Reset your password — SANTRACK',
       template: 'reset-password',
-      data: { resetUrl, expiresIn: '1 hour' },
+      data: {
+        title: 'Reset your password',
+        resetUrl,
+        expiresIn: '1 hour',
+      },
     });
   }
 
@@ -61,9 +84,13 @@ export class EmailService implements OnModuleInit {
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
     await this.send({
       to,
-      subject: 'Forgot Your Password? - SANTRACK',
+      subject: 'Forgot your password? — SANTRACK',
       template: 'forgot-password',
-      data: { resetUrl, expiresIn: '1 hour' },
+      data: {
+        title: 'Forgot your password?',
+        resetUrl,
+        expiresIn: '1 hour',
+      },
     });
   }
 
@@ -71,9 +98,39 @@ export class EmailService implements OnModuleInit {
     const dashboardUrl = `${baseUrl}/dashboard`;
     await this.send({
       to,
-      subject: 'Welcome to SANTRACK!',
+      subject: 'Welcome to SANTRACK',
       template: 'welcome',
-      data: { name, dashboardUrl },
+      data: {
+        title: 'Welcome to SANTRACK',
+        name,
+        dashboardUrl,
+      },
+    });
+  }
+
+  async sendInviteEmail(input: {
+    to: string;
+    name: string;
+    organizationName: string;
+    role: UserRole;
+    temporaryPassword: string;
+    inviterName: string;
+    loginUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: input.to,
+      subject: `You've been added to ${input.organizationName} — SANTRACK`,
+      template: 'invite',
+      data: {
+        title: 'Team invite',
+        name: input.name,
+        email: input.to,
+        organizationName: input.organizationName,
+        roleLabel: ROLE_LABELS[input.role] ?? input.role,
+        temporaryPassword: input.temporaryPassword,
+        inviterName: input.inviterName,
+        loginUrl: input.loginUrl,
+      },
     });
   }
 }

@@ -19,6 +19,16 @@ export class CreateOrganizationDto {
     message: `Choose the kind of business this is: ${SELF_DECLARABLE_TYPES.join(', ')}`,
   })
   type: OrganizationType;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(5, { message: 'TIN looks too short' })
+  tin?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2, { message: 'Registration number looks too short' })
+  registrationNumber?: string;
 }
 
 /**
@@ -40,6 +50,16 @@ export class AmendOrganizationDto {
     message: `Choose the kind of business this is: ${SELF_DECLARABLE_TYPES.join(', ')}`,
   })
   type?: OrganizationType;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(5, { message: 'TIN looks too short' })
+  tin?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(2, { message: 'Registration number looks too short' })
+  registrationNumber?: string;
 }
 
 /** Platform-operator action, not part of onboarding. */

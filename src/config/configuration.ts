@@ -16,6 +16,8 @@ export interface AppConfig {
     expiresIn: string;
   };
   corsOrigins: string[];
+  /** Browser origin used in invite / reset links (defaults to first CORS origin). */
+  appPublicUrl: string;
   /** Reverse-proxy hops to trust when deriving the client IP. 0 = direct. */
   trustProxyHops: number;
   /** Per-address ceilings on the unauthenticated routes. limit 0 disables. */
@@ -33,8 +35,22 @@ export interface AppConfig {
   storage: {
     driver: string;
     localRoot: string;
+    /**
+     * Only read when `driver` is `cloudinary`. Every field defaults to an
+     * empty string rather than being optional, so a half-configured driver
+     * fails at boot with a named missing credential instead of at the first
+     * upload with a 401 from someone else's API.
+     */
+    cloudinary: {
+      cloudName: string;
+      apiKey: string;
+      apiSecret: string;
+      folder: string;
+    };
   };
   redis: {
+    /** Present when REDIS_URL is set (managed Redis / Render Key Value). */
+    url?: string;
     host: string;
     port: number;
   };
@@ -65,6 +81,13 @@ export default (): AppConfig => ({
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+  appPublicUrl:
+    process.env.APP_PUBLIC_URL ??
+    (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)[0] ??
+    'http://localhost:3000',
   trustProxyHops: parseInt(process.env.TRUST_PROXY_HOPS ?? '0', 10),
   maintenance: {
     nearExpiryDays: parseInt(process.env.NEAR_EXPIRY_DAYS ?? '30', 10),
@@ -100,8 +123,16 @@ export default (): AppConfig => ({
   storage: {
     driver: process.env.STORAGE_DRIVER ?? 'local',
     localRoot: process.env.STORAGE_LOCAL_ROOT ?? './var/uploads',
+    cloudinary: {
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME ?? '',
+      apiKey: process.env.CLOUDINARY_API_KEY ?? '',
+      apiSecret: process.env.CLOUDINARY_API_SECRET ?? '',
+      folder: process.env.CLOUDINARY_FOLDER ?? 'santrack',
+    },
   },
   redis: {
+    /** Full URL when provided (Render Key Value). Takes precedence over host/port. */
+    url: process.env.REDIS_URL?.trim() || undefined,
     host: process.env.REDIS_HOST ?? 'localhost',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
   },

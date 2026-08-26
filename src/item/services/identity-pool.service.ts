@@ -13,7 +13,7 @@ import {
 import { Location } from '../../location/entities/location.entity';
 import { ProductionOrder } from '../../manufacturing/entities/production-order.entity';
 import { Organization } from '../../organization/entities/organization.entity';
-import { permitsIdentityAssignment } from '../../batch/batch-status.enum';
+import { BatchStatus } from '../../batch/batch-status.enum';
 import { Product } from '../../product/entities/product.entity';
 import { permitsIdentityPool } from '../../product/traceability-level.enum';
 import { EventType } from '../../traceability/event-type.enum';
@@ -412,14 +412,15 @@ export class IdentityPoolService {
       }
 
       /**
-       * The existing gate, unchanged: only an approved or active lot may
-       * acquire identities. Quality control has to have had its say before a
-       * code is allowed to mean a saleable bottle.
+       * Production output may only enter stock after QC has approved the lot.
+       * ACTIVE is for catalogue / opening-stock lots (no production run). A
+       * production lot that is still PENDING_QC (or worse) must not become
+       * sellable bottles — that is how unfinished goods used to ship.
        */
-      if (!permitsIdentityAssignment(order.batch.status)) {
+      if (order.batch.status !== BatchStatus.APPROVED) {
         throw new TraceabilityRuleException(
-          `Lot ${order.batch.batchCode} is ${order.batch.status} — only APPROVED ` +
-            'or ACTIVE lots may have identities confirmed against them',
+          `Lot ${order.batch.batchCode} is ${order.batch.status} — approve it in ` +
+            'quality control before confirming output into stock',
         );
       }
 

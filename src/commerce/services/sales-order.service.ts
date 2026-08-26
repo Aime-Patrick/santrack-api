@@ -12,6 +12,10 @@ import { ItemService } from '../../item/services/item.service';
 import { SaleService } from '../../sale/services/sale.service';
 import { Organization } from '../../organization/entities/organization.entity';
 import { Product } from '../../product/entities/product.entity';
+import {
+  salesUnitPermitted,
+  sellableUnits,
+} from '../../product/sales-unit';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
 import {
@@ -36,6 +40,10 @@ import { Invoice } from '../entities/invoice.entity';
 import { Quotation, QuotationLine } from '../entities/quotation.entity';
 import { SalesOrder, SalesOrderLine } from '../entities/sales-order.entity';
 import { SalesOrderReservation } from '../entities/sales-order-reservation.entity';
+import {
+  billedSalesQuantity,
+  requestedProductUnits,
+} from '../sales-line';
 
 @Injectable()
 export class SalesOrderService {
@@ -96,6 +104,8 @@ export class SalesOrderService {
           totalAmount: totals.total,
           notes: dto.notes ?? null,
           createdBy: actor,
+          roundingAcceptedAt: null,
+          roundingAcceptedBy: null,
         }),
       );
 
@@ -110,17 +120,15 @@ export class SalesOrderService {
   /**
    * A PLACED order is confirmed and its stock reserved (FEFO).
    *
-   * Confirmation checks the customer's credit ceiling, then for each order
-   * line picks the available identities expiring soonest — First Expired,
-   * First Out.  Reserved items carry ItemStatus.RESERVED: they cannot be
-   * sold to another customer, dispatched on a different order, or relocated
-   * away from where fulfilment expects to find them.
-   *
-   * If there is not enough available stock to cover the line, confirmation
-   * is refused rather than partially reserving — the seller must decide
-   * whether to split the order or wait for more stock.
+   * Order of work (DR-09 WU-5 / trap 1): reserve → set fulfilment quantities →
+   * recompute totals from what will ship → credit check. Never credit-check the
+   * provisional requested total when rounding may raise the bill.
    */
-  async confirm(organization: Organization, orderId: number): Promise<SalesOrder> {
+  async confirm(
+    organization: Organization,
+    orderId: number,
+    actor?: User | null,
+  ): Promise<SalesOrder> {
     return this.dataSource.transaction(async (manager) => {
       const order = await this.requireOwned(manager, organization, orderId);
       if (!canConfirmOrder(order.status)) {
@@ -129,20 +137,147 @@ export class SalesOrderService {
         );
       }
 
-      await this.requireCredit(manager, organization, order);
-
-      // Reserve stock for each line using FEFO.
       const lines = await manager.find(SalesOrderLine, {
         where: { order: { id: order.id } },
         relations: { product: true },
       });
 
+      let needsRoundingAccept = false;
+
       for (const line of lines) {
-        const needed = parseInt(line.quantity, 10);
-        await this.reserveLine(manager, organization, order, line, needed);
+        const result = await this.reserveLine(manager, organization, order, line);
+        if (result.roundedUp) {
+          needsRoundingAccept = true;
+        }
       }
 
+      if (needsRoundingAccept && !order.roundingAcceptedAt) {
+        throw new TraceabilityRuleException(
+          `Order ${order.orderNumber} rounds up from the requested quantities. ` +
+            'Record rounding acceptance before confirming.',
+        );
+      }
+
+      // Bill from fulfilment (product units → sales units), not the ask.
+      const amountLines = lines.map((line) => {
+        const fulfilment = parseFloat(line.fulfilmentQuantity ?? line.requestedQuantity);
+        const qty = billedSalesQuantity(
+          line.product,
+          line.salesUnit,
+          fulfilment,
+        );
+        return { quantity: qty, unitPrice: parseFloat(line.unitPrice) };
+      });
+      const totals = computeTotals(amountLines, parseFloat(order.taxPercent ?? '0'));
+      order.subtotal = totals.subtotal;
+      order.totalAmount = totals.total;
+
+      for (const line of lines) {
+        const fulfilment = parseFloat(line.fulfilmentQuantity ?? line.requestedQuantity);
+        const qty = billedSalesQuantity(line.product, line.salesUnit, fulfilment);
+        line.lineTotal = String(
+          lineTotal({ quantity: qty, unitPrice: parseFloat(line.unitPrice) }),
+        );
+        await manager.save(SalesOrderLine, line);
+      }
+
+      await this.requireCredit(manager, organization, order);
+
       order.status = SalesOrderStatus.CONFIRMED;
+      if (actor && needsRoundingAccept && !order.roundingAcceptedBy) {
+        order.roundingAcceptedBy = actor;
+      }
+      return manager.save(SalesOrder, order);
+    });
+  }
+
+  /**
+   * Dry-run of what confirm would reserve — requested vs planned fulfilment —
+   * without touching stock. Powers the three-quantity UI (DR-09 WU-8).
+   */
+  async planFulfilment(organization: Organization, orderId: number) {
+    const order = await this.requireOwned(
+      this.dataSource.manager,
+      organization,
+      orderId,
+    );
+    const lines = await this.orderLines.find({
+      where: { order: { id: order.id } },
+      relations: { product: true },
+    });
+
+    const planned = await Promise.all(
+      lines.map(async (line) => {
+        const needed = requestedProductUnits(
+          line.product,
+          line.salesUnit,
+          parseFloat(line.requestedQuantity),
+        );
+
+        const candidates = await this.dataSource.manager.find(TraceableItem, {
+          where: {
+            product: { id: line.product.id },
+            holder: { id: organization.id },
+            status: ItemStatus.ACTIVE,
+          },
+          order: { expiresOn: 'ASC' as never, id: 'ASC' },
+        });
+        const available = candidates.filter((item) => !item.parent);
+
+        let covered = 0;
+        let identities = 0;
+        for (const item of available) {
+          if (covered >= needed) break;
+          covered += item.quantity;
+          identities += 1;
+        }
+
+        return {
+          lineId: line.id,
+          productId: line.product.id,
+          productName: line.product.name,
+          salesUnit: line.salesUnit,
+          baseUnit: line.product.baseUnit,
+          packUnit: line.product.packUnit,
+          unitsPerPack: line.product.unitsPerPack,
+          requestedQuantity: Number(line.requestedQuantity),
+          requestedProductUnits: needed,
+          plannedFulfilmentQuantity: covered >= needed ? covered : null,
+          plannedIdentityCount: covered >= needed ? identities : null,
+          availableProductUnits: available.reduce((s, i) => s + i.quantity, 0),
+          roundedUp: covered >= needed && covered > needed + 1e-9,
+          shortfall: covered < needed,
+        };
+      }),
+    );
+
+    return {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      roundingAcceptedAt: order.roundingAcceptedAt,
+      lines: planned,
+      needsRoundingAccept: planned.some((l) => l.roundedUp),
+    };
+  }
+
+  /**
+   * Customer (or seller on their behalf) accepts warehouse rounding so confirm
+   * may proceed when fulfilment exceeds the requested product units.
+   */
+  async acceptRounding(
+    organization: Organization,
+    orderId: number,
+    actor: User,
+  ): Promise<SalesOrder> {
+    return this.dataSource.transaction(async (manager) => {
+      const order = await this.requireOwned(manager, organization, orderId);
+      if (order.status !== SalesOrderStatus.PLACED) {
+        throw new TraceabilityRuleException(
+          `Order ${order.orderNumber} is ${order.status}; rounding is accepted on a placed order before confirm`,
+        );
+      }
+      order.roundingAcceptedAt = new Date();
+      order.roundingAcceptedBy = actor;
       return manager.save(SalesOrder, order);
     });
   }
@@ -281,6 +416,15 @@ export class SalesOrderService {
     return transfer;
   }
 
+  /**
+   * Cancels the order and gives its reserved stock back (DR-09 WU-6).
+   *
+   * Cancelling used to set the status and stop there, which stranded the
+   * goods permanently: the identities stayed RESERVED, and `sell`,
+   * `dispatch` and `relocate` all refuse RESERVED, so nothing could ever be
+   * done with them again. Any order cancelled before this change has stock
+   * that needs `scripts/release-stranded-reservations.ts` run over it once.
+   */
   async cancel(organization: Organization, orderId: number): Promise<SalesOrder> {
     return this.dataSource.transaction(async (manager) => {
       const order = await this.requireOwned(manager, organization, orderId);
@@ -289,9 +433,100 @@ export class SalesOrderService {
           `Order ${order.orderNumber} is ${order.status} and cannot be cancelled`,
         );
       }
+
+      await this.releaseReservations(manager, organization, order, 'cancelled');
+
       order.status = SalesOrderStatus.CANCELLED;
       return manager.save(SalesOrder, order);
     });
+  }
+
+  /**
+   * Gives a confirmed order's stock back without cancelling the order.
+   *
+   * The order returns to PLACED, which is the only honest place for it: it
+   * still exists and is still wanted, but nothing is committed to it any
+   * more. Leaving it CONFIRMED with no reservations would let someone call
+   * `fulfil()` on an order with nothing to fulfil, and PLACED is exactly the
+   * state `confirm()` accepts, so re-reserving is one call away.
+   *
+   * Used when stock reserved for one customer is needed for another, or when
+   * an order is going to sit unfulfilled long enough that holding the goods
+   * costs more than the order is worth.
+   */
+  async release(organization: Organization, orderId: number): Promise<SalesOrder> {
+    return this.dataSource.transaction(async (manager) => {
+      const order = await this.requireOwned(manager, organization, orderId);
+      if (order.status !== SalesOrderStatus.CONFIRMED) {
+        throw new TraceabilityRuleException(
+          `Order ${order.orderNumber} is ${order.status}; only a CONFIRMED order holds stock to release`,
+        );
+      }
+
+      const released = await this.releaseReservations(
+        manager,
+        organization,
+        order,
+        'released',
+      );
+
+      if (released === 0) {
+        throw new TraceabilityRuleException(
+          `Order ${order.orderNumber} holds no reserved stock`,
+        );
+      }
+
+      order.status = SalesOrderStatus.PLACED;
+      return manager.save(SalesOrder, order);
+    });
+  }
+
+  /**
+   * Returns every identity this order still holds to ACTIVE, and says so in
+   * the timeline. Answers with how many were actually released.
+   *
+   * The reservation rows are deliberately left in place (DR-09 invariant 9).
+   * They record that this stock *was* committed to this order, which stays
+   * true after the commitment ends; deleting them would erase the reason the
+   * goods sat unavailable for however long they did.
+   *
+   * Only items still RESERVED are touched. Anything else — already dispatched
+   * on another route, sold, recalled — is somebody else's transition, and
+   * forcing it back to ACTIVE here would be inventing stock.
+   */
+  private async releaseReservations(
+    manager: EntityManager,
+    organization: Organization,
+    order: SalesOrder,
+    verb: 'cancelled' | 'released',
+  ): Promise<number> {
+    const rows = await manager.find(SalesOrderReservation, {
+      where: { order: { id: order.id } },
+      relations: { item: true },
+    });
+
+    let released = 0;
+
+    for (const row of rows) {
+      const item = row.item;
+      if (!item || item.status !== ItemStatus.RESERVED) continue;
+
+      item.status = ItemStatus.ACTIVE;
+      await manager.save(TraceableItem, item);
+
+      await this.recorder.record(manager, {
+        item,
+        type: EventType.RELEASED,
+        actor: null,
+        destinationOrganization: organization,
+        quantity: row.quantity,
+        notes: `Reservation for ${order.orderNumber} ${verb}`,
+      });
+
+      released++;
+    }
+
+    return released;
   }
 
   async list(organization: Organization, page: number, size: number) {
@@ -366,8 +601,13 @@ export class SalesOrderService {
     if (!product) {
       throw new NotFoundEntityException('Product', line.productId);
     }
+
+    const requested = parseFloat(line.requestedQuantity);
+    const salesUnit = resolveSalesUnit(product, line.salesUnit);
+    assertSalesUnit(product, salesUnit, requested);
+
     const total = lineTotal({
-      quantity: parseFloat(line.quantity),
+      quantity: requested,
       unitPrice: parseFloat(line.unitPrice),
     });
     return manager.save(
@@ -375,7 +615,9 @@ export class SalesOrderService {
         order: { id: orderId } as SalesOrder,
         product,
         description: line.description ?? product.name,
-        quantity: line.quantity,
+        requestedQuantity: line.requestedQuantity,
+        salesUnit,
+        fulfilmentQuantity: null,
         unitPrice: line.unitPrice,
         lineTotal: String(total),
       }),
@@ -407,22 +649,24 @@ export class SalesOrderService {
   }
 
   /**
-   * FEFO reservation: picks the available identities for a product that
-   * expire soonest.  Items with no expiry are picked last (they never
-   * become unsellable, so there is no urgency).
+   * FEFO reservation in product units (DR-09 WU-5).
    *
-   * Each picked item moves to RESERVED and a reservation row ties it to
-   * the order line.  The caller must be inside a transaction.
+   * Accumulates `item.quantity` until the requested product units are covered,
+   * writes the true quantity on each reservation row, and sets the line's
+   * `fulfilmentQuantity` to the sum. Whole identities only — never splits.
    */
   private async reserveLine(
     manager: EntityManager,
     organization: Organization,
     order: SalesOrder,
     line: SalesOrderLine,
-    needed: number,
-  ): Promise<void> {
-    // Available items: same product, held by this org, ACTIVE, not in a
-    // container (top-level only — you dispatch what you hold directly).
+  ): Promise<{ roundedUp: boolean }> {
+    const needed = requestedProductUnits(
+      line.product,
+      line.salesUnit,
+      parseFloat(line.requestedQuantity),
+    );
+
     const candidates = await manager.find(TraceableItem, {
       where: {
         product: { id: line.product.id },
@@ -430,26 +674,33 @@ export class SalesOrderService {
         status: ItemStatus.ACTIVE,
       },
       order: {
-        // FEFO: items expiring soonest first; null expires last.
         expiresOn: 'ASC' as never,
         id: 'ASC',
       },
     });
 
-    // Filter to top-level only (not inside a container).
     const available = candidates.filter((item) => !item.parent);
+    const availableUnits = available.reduce((sum, item) => sum + item.quantity, 0);
 
-    if (available.length < needed) {
+    if (availableUnits < needed) {
+      const unitLabel = line.product.baseUnit ?? 'units';
       throw new TraceabilityRuleException(
-        `Insufficient stock for ${line.product.name}: need ${needed}, ` +
-          `only ${available.length} available`,
+        `Insufficient stock for ${line.product.name}: need ${needed} ${unitLabel}, ` +
+          `only ${availableUnits} ${unitLabel} available`,
       );
     }
 
-    let remaining = needed;
+    const picks: TraceableItem[] = [];
+    let covered = 0;
     for (const item of available) {
-      if (remaining <= 0) break;
+      if (covered >= needed) break;
+      picks.push(item);
+      covered += item.quantity;
+    }
 
+    const roundedUp = covered > needed + 1e-9;
+
+    for (const item of picks) {
       item.status = ItemStatus.RESERVED;
       await manager.save(TraceableItem, item);
 
@@ -458,7 +709,7 @@ export class SalesOrderService {
           order,
           orderLine: line,
           item,
-          quantity: 1,
+          quantity: item.quantity,
         }),
       );
 
@@ -467,12 +718,15 @@ export class SalesOrderService {
         type: EventType.RESERVED,
         actor: null,
         destinationOrganization: organization,
-        quantity: 1,
+        quantity: item.quantity,
         notes: `Reserved for ${order.orderNumber}`,
       });
-
-      remaining--;
     }
+
+    line.fulfilmentQuantity = String(covered);
+    await manager.save(SalesOrderLine, line);
+
+    return { roundedUp };
   }
 
   private async nextNumber(manager: EntityManager, prefix: string): Promise<string> {
@@ -482,5 +736,47 @@ export class SalesOrderService {
 }
 
 function toAmountLine(line: QuotationLineDto) {
-  return { quantity: parseFloat(line.quantity), unitPrice: parseFloat(line.unitPrice) };
+  return {
+    quantity: parseFloat(line.requestedQuantity),
+    unitPrice: parseFloat(line.unitPrice),
+  };
+}
+
+/** Null when the product has no units declared (legacy bare quantity). */
+function resolveSalesUnit(
+  product: Product,
+  requested: string | undefined,
+): string | null {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    return requested?.trim() || null;
+  }
+  return (requested?.trim() || product.baseUnit || offered[0]) ?? null;
+}
+
+function assertSalesUnit(
+  product: Product,
+  salesUnit: string | null,
+  requestedQuantity: number,
+): void {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    if (salesUnit) {
+      const msg = salesUnitPermitted(product, salesUnit, requestedQuantity);
+      if (msg !== true) {
+        throw new TraceabilityRuleException(msg);
+      }
+    }
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+      throw new TraceabilityRuleException(
+        `An order line for ${product.name} needs a quantity above zero.`,
+      );
+    }
+    return;
+  }
+
+  const msg = salesUnitPermitted(product, salesUnit ?? '', requestedQuantity);
+  if (msg !== true) {
+    throw new TraceabilityRuleException(msg);
+  }
 }

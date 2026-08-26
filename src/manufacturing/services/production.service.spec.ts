@@ -153,13 +153,13 @@ describe('completing a production order', () => {
       batch: {
         id: 3,
         batchCode: 'PO-0007',
-        status: BatchStatus.ACTIVE,
+        status: BatchStatus.PENDING_QC,
         manufacturedOn: null,
         expiresOn: null,
       },
     });
 
-  it('moves the lot from ACTIVE to PENDING_QC inside the caller transaction', async () => {
+  it('keeps the lot at PENDING_QC inside the caller transaction', async () => {
     const order = runningOrder();
     const h = harness({ order });
 

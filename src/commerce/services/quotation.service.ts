@@ -7,6 +7,10 @@ import { SequenceService } from '../../common/sequence.service';
 import { Organization } from '../../organization/entities/organization.entity';
 import { Product } from '../../product/entities/product.entity';
 import {
+  salesUnitPermitted,
+  sellableUnits,
+} from '../../product/sales-unit';
+import {
   QuotationStatus,
   canAcceptQuotation,
   canExpireQuotation,
@@ -163,8 +167,13 @@ export class QuotationService {
     if (!product) {
       throw new NotFoundEntityException('Product', line.productId);
     }
+
+    const requested = parseFloat(line.requestedQuantity);
+    const salesUnit = resolveSalesUnit(product, line.salesUnit);
+    assertSalesUnit(product, salesUnit, requested);
+
     const total = lineTotal({
-      quantity: parseFloat(line.quantity),
+      quantity: requested,
       unitPrice: parseFloat(line.unitPrice),
     });
     return manager.save(
@@ -172,7 +181,8 @@ export class QuotationService {
         quotation: { id: quotationId } as Quotation,
         product,
         description: line.description ?? product.name,
-        quantity: line.quantity,
+        requestedQuantity: line.requestedQuantity,
+        salesUnit,
         unitPrice: line.unitPrice,
         lineTotal: String(total),
       }),
@@ -210,5 +220,46 @@ export class QuotationService {
 }
 
 function toAmountLine(line: QuotationLineDto) {
-  return { quantity: parseFloat(line.quantity), unitPrice: parseFloat(line.unitPrice) };
+  return {
+    quantity: parseFloat(line.requestedQuantity),
+    unitPrice: parseFloat(line.unitPrice),
+  };
+}
+
+function resolveSalesUnit(
+  product: Product,
+  requested: string | undefined,
+): string | null {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    return requested?.trim() || null;
+  }
+  return (requested?.trim() || product.baseUnit || offered[0]) ?? null;
+}
+
+function assertSalesUnit(
+  product: Product,
+  salesUnit: string | null,
+  requestedQuantity: number,
+): void {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    if (salesUnit) {
+      const msg = salesUnitPermitted(product, salesUnit, requestedQuantity);
+      if (msg !== true) {
+        throw new TraceabilityRuleException(msg);
+      }
+    }
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+      throw new TraceabilityRuleException(
+        `An order line for ${product.name} needs a quantity above zero.`,
+      );
+    }
+    return;
+  }
+
+  const msg = salesUnitPermitted(product, salesUnit ?? '', requestedQuantity);
+  if (msg !== true) {
+    throw new TraceabilityRuleException(msg);
+  }
 }

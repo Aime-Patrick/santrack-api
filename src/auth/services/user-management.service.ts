@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomBytes } from 'crypto';
 import { Repository } from 'typeorm';
 import { hash } from 'bcryptjs';
 
@@ -8,10 +10,20 @@ import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { EmailService } from '../../email/email.service';
 import { Organization } from '../../organization/entities/organization.entity';
-import { CreateUserDto, ResetPasswordDto, UpdateUserDto } from '../dto/user-management.dto';
+import {
+  CreateUserDto,
+  ResetPasswordDto,
+  UpdateUserDto,
+} from '../dto/user-management.dto';
 import { User } from '../entities/user.entity';
 import { UserRole } from '../user-role.enum';
+
+export type CreatedUserResult = Omit<User, 'passwordHash'> & {
+  /** Present only when the server generated the temporary password. */
+  temporaryPassword?: string;
+};
 
 /**
  * Manages user accounts within organizations. An org admin can invite and
@@ -25,16 +37,16 @@ export class UserManagementService {
     private readonly users: Repository<User>,
     @InjectRepository(Organization)
     private readonly organizations: Repository<Organization>,
+    private readonly email: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
    * Creates a new user within an organization. The caller must belong to the
-   * same organization (or be a system admin).
+   * same organization (or be a system admin). Invited accounts always require
+   * a password change on first sign-in.
    */
-  async create(
-    actor: User,
-    dto: CreateUserDto,
-  ): Promise<User> {
+  async create(actor: User, dto: CreateUserDto): Promise<CreatedUserResult> {
     const email = dto.email.trim().toLowerCase();
 
     if (await this.users.findOne({ where: { email } })) {
@@ -48,7 +60,6 @@ export class UserManagementService {
       throw new NotFoundEntityException('Organization', dto.organizationId);
     }
 
-    // Non-system admins can only create users in their own organization.
     if (
       actor.role !== UserRole.SYSTEM_ADMIN &&
       actor.organization?.id !== organization.id
@@ -58,27 +69,59 @@ export class UserManagementService {
       );
     }
 
+    if (actor.role !== UserRole.SYSTEM_ADMIN && dto.role === UserRole.SYSTEM_ADMIN) {
+      throw new TraceabilityRuleException(
+        'Only system administrators can assign the SYSTEM_ADMIN role',
+      );
+    }
+
+    const generate = dto.generatePassword === true || !dto.password;
+    const temporaryPassword = generate
+      ? generateTemporaryPassword()
+      : dto.password!.trim();
+
+    if (temporaryPassword.length < 8) {
+      throw new TraceabilityRuleException(
+        'Password must be at least 8 characters',
+      );
+    }
+
+    const fullName = dto.fullName?.trim() || null;
+
     const user = await this.users.save(
       this.users.create({
         email,
-        passwordHash: await hash(dto.password, 10),
-        fullName: dto.fullName.trim(),
+        passwordHash: await hash(temporaryPassword, 10),
+        fullName,
         organization,
         role: dto.role,
+        mustChangePassword: true,
       }),
     );
 
-    return this.describe(user);
+    const appUrl = this.appPublicUrl();
+    void this.email
+      .sendInviteEmail({
+        to: email,
+        name: fullName ?? email,
+        organizationName: organization.name,
+        role: dto.role,
+        temporaryPassword,
+        inviterName: actor.fullName ?? actor.email,
+        loginUrl: `${appUrl}/login`,
+      })
+      .catch(() => undefined);
+
+    return {
+      ...this.describe(user),
+      ...(generate ? { temporaryPassword } : {}),
+    };
   }
 
-  /**
-   * Lists users, optionally filtered by organization. System admins see all
-   * users; org admins see only their own organization's users.
-   */
   async list(
     actor: User,
     organizationId?: number,
-  ): Promise<User[]> {
+  ): Promise<Omit<User, 'passwordHash'>[]> {
     const orgId = this.resolveOrgId(actor, organizationId);
 
     const where: Record<string, unknown> = {};
@@ -95,11 +138,7 @@ export class UserManagementService {
     return users.map((u) => this.describe(u));
   }
 
-  /**
-   * Returns one user by ID. System admins can see anyone; org admins can
-   * only see users in their own organization.
-   */
-  async get(actor: User, userId: number): Promise<User> {
+  async get(actor: User, userId: number): Promise<Omit<User, 'passwordHash'>> {
     const user = await this.users.findOne({
       where: { id: userId },
       relations: { organization: true },
@@ -113,16 +152,11 @@ export class UserManagementService {
     return this.describe(user);
   }
 
-  /**
-   * Updates a user's profile or role. System admins can change anything;
-   * org admins can only modify users within their own organization and
-   * cannot promote anyone to SYSTEM_ADMIN.
-   */
   async update(
     actor: User,
     userId: number,
     dto: UpdateUserDto,
-  ): Promise<User> {
+  ): Promise<Omit<User, 'passwordHash'>> {
     const user = await this.users.findOne({
       where: { id: userId },
       relations: { organization: true },
@@ -133,7 +167,6 @@ export class UserManagementService {
 
     this.requireVisible(actor, user);
 
-    // Org admins cannot promote to SYSTEM_ADMIN.
     if (
       actor.role !== UserRole.SYSTEM_ADMIN &&
       dto.role === UserRole.SYSTEM_ADMIN
@@ -144,7 +177,7 @@ export class UserManagementService {
     }
 
     if (dto.fullName !== undefined) {
-      user.fullName = dto.fullName.trim();
+      user.fullName = dto.fullName.trim() || null;
     }
 
     if (dto.role !== undefined) {
@@ -165,10 +198,6 @@ export class UserManagementService {
     return this.describe(saved);
   }
 
-  /**
-   * Resets a user's password. System admins can reset anyone's; org admins
-   * can only reset passwords for users in their own organization.
-   */
   async resetPassword(
     actor: User,
     userId: number,
@@ -182,14 +211,10 @@ export class UserManagementService {
     this.requireVisible(actor, user);
 
     user.passwordHash = await hash(dto.password, 10);
+    user.mustChangePassword = true;
     await this.users.save(user);
   }
 
-  /**
-   * Deactivates a user by removing them. A system admin can deactivate
-   * anyone; an org admin can only deactivate users in their own org.
-   * A user cannot deactivate themselves.
-   */
   async remove(actor: User, userId: number): Promise<void> {
     if (actor.id === userId) {
       throw new TraceabilityRuleException('You cannot deactivate your own account');
@@ -205,15 +230,9 @@ export class UserManagementService {
     await this.users.remove(user);
   }
 
-  // ── helpers ────────────────────────────────────────────────────────
-
-  /**
-   * Resolves which organization to filter by. System admins can pass any
-   * org ID (or none for all). Org admins are locked to their own.
-   */
   private resolveOrgId(actor: User, requested?: number): number | null {
     if (actor.role === UserRole.SYSTEM_ADMIN) {
-      return requested ?? null; // null = all organizations
+      return requested ?? null;
     }
     if (!actor.organization) {
       throw new TraceabilityRuleException(
@@ -228,7 +247,6 @@ export class UserManagementService {
     return actor.organization.id;
   }
 
-  /** Ensures the actor can see the target user. */
   private requireVisible(actor: User, target: User): void {
     if (actor.role === UserRole.SYSTEM_ADMIN) return;
     if (!actor.organization) {
@@ -241,9 +259,26 @@ export class UserManagementService {
     }
   }
 
-  /** Strips the password hash before returning a user. */
-  private describe(user: User): User {
+  private describe(user: User): Omit<User, 'passwordHash'> {
     const { passwordHash: _, ...rest } = user as User & { passwordHash: string };
-    return rest as User;
+    return rest;
   }
+
+  private appPublicUrl(): string {
+    const configured = this.config.get<string>('appPublicUrl');
+    if (configured) return configured.replace(/\/$/, '');
+    const origins = this.config.get<string[]>('corsOrigins') ?? [];
+    return (origins[0] ?? 'http://localhost:3000').replace(/\/$/, '');
+  }
+}
+
+/** Readable temporary password: no ambiguous characters (0/O, 1/l). */
+function generateTemporaryPassword(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = randomBytes(12);
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) {
+    out += alphabet[bytes[i]! % alphabet.length];
+  }
+  return out;
 }

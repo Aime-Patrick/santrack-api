@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Public, RequireCapability } from '../../common/decorators';
 import { Capability } from '../capabilities';
 import { RateLimit } from '../../security/rate-limit.guard';
+import { ChangePasswordDto } from '../dto/user-management.dto';
 import { LoginDto, RegisterDto } from '../dto/auth.dto';
 import { User } from '../entities/user.entity';
 import { AuthService } from '../services/auth.service';
@@ -29,6 +30,16 @@ export class AuthController {
   @RateLimit('login', 20, 15 * 60 * 1000)
   async login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  /** Replaces the caller's password and clears mustChangePassword. */
+  @Post('change-password')
+  @HttpCode(200)
+  async changePassword(
+    @CurrentUser() user: User,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.auth.changePassword(user, dto);
   }
 
   /**

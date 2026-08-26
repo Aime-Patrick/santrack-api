@@ -72,9 +72,11 @@ export class ItemService {
    */
   async require(qrCode: string, manager?: EntityManager): Promise<TraceableItem> {
     const repo = manager ? manager.getRepository(TraceableItem) : this.items;
+    const scanRelations = { parent: true, pool: true } as const;
+
     const item =
-      (await repo.findOne({ where: { qrCode }, relations: { parent: true } })) ??
-      (await repo.findOne({ where: { code: qrCode }, relations: { parent: true } }));
+      (await repo.findOne({ where: { qrCode }, relations: scanRelations })) ??
+      (await repo.findOne({ where: { code: qrCode }, relations: scanRelations }));
     if (item) return item;
 
     // 3. Try product GTIN (manufacturer barcode)
@@ -85,10 +87,18 @@ export class ItemService {
           product: { id: productByGtin.id },
           status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
         },
-        relations: { parent: true },
+        relations: scanRelations,
         order: { id: 'ASC' },
       });
       if (itemByGtin) return itemByGtin;
+
+      await this.rejectProductBarcodeAsIdentity(
+        qrCode,
+        productByGtin.id,
+        productByGtin.sku,
+        'GTIN',
+        repo,
+      );
     }
 
     // 4. Try product SKU
@@ -99,13 +109,52 @@ export class ItemService {
           product: { id: productBySku.id },
           status: Not(In(NON_PHYSICAL_STATUSES as ItemStatus[])),
         },
-        relations: { parent: true },
+        relations: scanRelations,
         order: { id: 'ASC' },
       });
       if (itemBySku) return itemBySku;
+
+      await this.rejectProductBarcodeAsIdentity(
+        qrCode,
+        productBySku.id,
+        productBySku.sku,
+        'SKU',
+        repo,
+      );
     }
 
     throw new ItemNotFoundException(qrCode);
+  }
+
+  /**
+   * Scanned value matched a product catalogue code, but not a physical stock
+   * identity. Pool labels encode the UUID (or serial ST-…), not the product SKU.
+   */
+  private async rejectProductBarcodeAsIdentity(
+    scanned: string,
+    productId: number,
+    sku: string,
+    kind: 'SKU' | 'GTIN',
+    repo: Repository<TraceableItem>,
+  ): Promise<never> {
+    const sample = await repo.findOne({
+      where: { product: { id: productId } },
+      order: { id: 'ASC' },
+    });
+
+    if (sample) {
+      throw new TraceabilityRuleException(
+        `${scanned} is the product ${kind}, not a pool identity. ` +
+          `Scan the QR from the pool export (payload is a UUID) or type the serial ` +
+          `(e.g. ${sample.code}). Pool labels are not sellable until production ` +
+          `confirms them as ACTIVE stock.`,
+      );
+    }
+
+    throw new TraceabilityRuleException(
+      `${scanned} is product ${kind} ${sku}, but no identities exist yet. ` +
+        `Mint a pool and print those QRs, then confirm production before selling.`,
+    );
   }
 
   /**
@@ -116,12 +165,19 @@ export class ItemService {
    * and a shop must still see what it sold. Anyone who never touched the
    * product sees nothing - organizational data stays isolated (proposal
    * section 25) without breaking traceability (section 9).
+   *
+   * Owning the minting pool also counts: GENERATED / ASSIGNED labels have no
+   * holder yet, but the manufacturer that printed them must still resolve a
+   * scan of their own pool QR.
    */
   async maySee(item: TraceableItem, organization: Organization): Promise<boolean> {
     if (organization.type === 'REGULATOR') {
       return true;
     }
     if (item.holder?.id === organization.id) {
+      return true;
+    }
+    if (item.pool?.organizationId === organization.id) {
       return true;
     }
 
@@ -161,11 +217,11 @@ export class ItemService {
     return (
       (await this.items.findOne({
         where: { qrCode: trimmed },
-        relations: { parent: true },
+        relations: { parent: true, pool: true },
       })) ??
       (await this.items.findOne({
         where: { code: trimmed },
-        relations: { parent: true },
+        relations: { parent: true, pool: true },
       }))
     );
   }
@@ -190,6 +246,7 @@ export class ItemService {
     topLevelOnly: boolean,
     page: number,
     size: number,
+    productId?: number,
   ): Promise<{ content: TraceableItem[]; total: number; page: number; size: number }> {
     const where: Record<string, unknown> = { holder: { id: organization.id } };
     if (kind) {
@@ -198,10 +255,13 @@ export class ItemService {
     if (topLevelOnly) {
       where.parent = IsNull();
     }
+    if (productId) {
+      where.product = { id: productId };
+    }
 
     const [content, total] = await this.items.findAndCount({
       where,
-      relations: { parent: true },
+      relations: { parent: true, product: true, location: true },
       order: { id: 'DESC' },
       skip: page * size,
       take: size,

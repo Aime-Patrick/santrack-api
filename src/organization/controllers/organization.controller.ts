@@ -148,6 +148,8 @@ function describe(organization: Organization) {
     id: organization.id,
     name: organization.name,
     type: organization.type,
+    tin: organization.tin,
+    registrationNumber: organization.registrationNumber,
     createdAt: organization.createdAt,
   };
 }

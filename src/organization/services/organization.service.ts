@@ -84,7 +84,12 @@ export class OrganizationService {
     }
 
     const organization = await this.organizations.save(
-      this.organizations.create({ name, type: dto.type }),
+      this.organizations.create({
+        name,
+        type: dto.type,
+        tin: dto.tin?.trim() || null,
+        registrationNumber: dto.registrationNumber?.trim() || null,
+      }),
     );
 
     /**
@@ -210,7 +215,12 @@ export class OrganizationService {
    */
   async amend(
     organizationId: number,
-    changes: { name?: string; type?: OrganizationType },
+    changes: {
+      name?: string;
+      type?: OrganizationType;
+      tin?: string;
+      registrationNumber?: string;
+    },
   ): Promise<Organization> {
     const organization = await this.organizations.findOne({
       where: { id: organizationId },
@@ -242,6 +252,14 @@ export class OrganizationService {
         );
       }
       organization.name = name;
+    }
+
+    if (changes.tin !== undefined) {
+      organization.tin = changes.tin.trim() || null;
+    }
+    if (changes.registrationNumber !== undefined) {
+      organization.registrationNumber =
+        changes.registrationNumber.trim() || null;
     }
 
     return this.organizations.save(organization);

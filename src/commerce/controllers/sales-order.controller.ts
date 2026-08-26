@@ -43,9 +43,22 @@ export class SalesOrderController {
   @RequireCapability(Capability.MANAGE_CLIENTS)
   async confirm(
     @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
     @Param('id', ParseIntPipe) id: number,
   ) {
-    const order = await this.orders.confirm(organization, id);
+    const order = await this.orders.confirm(organization, id, actor);
+    return describe(order, await this.orders.linesOf(order.id));
+  }
+
+  @Post(':id/accept-rounding')
+  @HttpCode(200)
+  @RequireCapability(Capability.MANAGE_CLIENTS)
+  async acceptRounding(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const order = await this.orders.acceptRounding(organization, id, actor);
     return describe(order, await this.orders.linesOf(order.id));
   }
 
@@ -71,6 +84,22 @@ export class SalesOrderController {
     return describe(order, await this.orders.linesOf(order.id));
   }
 
+  /**
+   * Gives the order's reserved stock back and returns it to PLACED, without
+   * cancelling it (DR-09 WU-6). Same capability as cancelling: both decide
+   * what happens to a customer's order.
+   */
+  @Post(':id/release')
+  @HttpCode(200)
+  @RequireCapability(Capability.MANAGE_CLIENTS)
+  async release(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const order = await this.orders.release(organization, id);
+    return describe(order, await this.orders.linesOf(order.id));
+  }
+
   @Get()
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async list(
@@ -89,6 +118,15 @@ export class SalesOrderController {
       ),
     );
     return { ...result, content };
+  }
+
+  @Get(':id/fulfilment-plan')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async fulfilmentPlan(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.orders.planFulfilment(organization, id);
   }
 
   @Get(':id')
@@ -123,13 +161,19 @@ function describe(order: SalesOrder, lines: SalesOrderLine[]) {
      */
     transferId: order.transferId,
     saleId: order.saleId,
+    roundingAcceptedAt: order.roundingAcceptedAt,
     createdAt: order.createdAt,
     lines: lines.map((line) => ({
       id: line.id,
       productId: line.product.id,
       productName: line.product.name,
       description: line.description,
-      quantity: Number(line.quantity),
+      salesUnit: line.salesUnit,
+      requestedQuantity: Number(line.requestedQuantity),
+      fulfilmentQuantity:
+        line.fulfilmentQuantity === null ? null : Number(line.fulfilmentQuantity),
+      /** @deprecated Prefer requestedQuantity — kept for older clients. */
+      quantity: Number(line.requestedQuantity),
       unitPrice: Number(line.unitPrice),
       lineTotal: line.lineTotal === null ? null : Number(line.lineTotal),
     })),

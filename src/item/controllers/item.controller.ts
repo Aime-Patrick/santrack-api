@@ -79,6 +79,7 @@ export class ItemController {
     @ActingOrg() organization: Organization,
     @Query('kind') kind?: ItemKind,
     @Query('topLevel') topLevel?: string,
+    @Query('productId') productId?: string,
     @Query('page') page = '0',
     @Query('size') size = '20',
   ) {
@@ -88,6 +89,7 @@ export class ItemController {
       topLevel === 'true',
       parseInt(page, 10) || 0,
       Math.min(parseInt(size, 10) || 20, 200),
+      productId ? parseInt(productId, 10) || undefined : undefined,
     );
     return { ...result, content: result.content.map((i) => view(i, true)) };
   }

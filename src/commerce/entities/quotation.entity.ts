@@ -80,8 +80,13 @@ export class QuotationLine {
   @Column({ type: 'varchar', nullable: true })
   description: string | null;
 
-  @Column({ type: 'numeric', precision: 14, scale: 3, nullable: false })
-  quantity: string;
+  /** What the customer was offered, in {@link salesUnit}. */
+  @Column({ name: 'requested_quantity', type: 'numeric', precision: 14, scale: 3, nullable: false })
+  requestedQuantity: string;
+
+  /** Commercial unit. Null on historic rows = bare product units. */
+  @Column({ name: 'sales_unit', type: 'varchar', nullable: true })
+  salesUnit: string | null;
 
   @Column({ name: 'unit_price', type: 'numeric', precision: 14, scale: 2, nullable: false })
   unitPrice: string;

@@ -49,7 +49,7 @@ export class CustomerService {
         phone: dto.phone ?? null,
         email: dto.email ?? null,
         address: dto.address ?? null,
-        creditLimit: dto.creditLimit === undefined ? null : String(dto.creditLimit),
+        creditLimit: dto.creditLimit == null ? null : String(dto.creditLimit),
         active: dto.active ?? true,
       }),
     );
@@ -86,7 +86,8 @@ export class CustomerService {
     if (dto.email !== undefined) customer.email = dto.email ?? null;
     if (dto.address !== undefined) customer.address = dto.address ?? null;
     if (dto.creditLimit !== undefined) {
-      customer.creditLimit = String(dto.creditLimit);
+      customer.creditLimit =
+        dto.creditLimit === null ? null : String(dto.creditLimit);
     }
     if (dto.active !== undefined) customer.active = dto.active;
     if (dto.buyerOrganizationId !== undefined) {

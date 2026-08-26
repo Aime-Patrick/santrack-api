@@ -23,8 +23,16 @@ export class User {
   @Column({ name: 'password_hash', nullable: false, select: false })
   passwordHash: string;
 
-  @Column({ name: 'full_name', nullable: false })
-  fullName: string;
+  /** Optional for invited staff; self-registration still collects a name. */
+  @Column({ name: 'full_name', type: 'varchar', nullable: true })
+  fullName: string | null;
+
+  /**
+   * True when the account was created or reset with a temporary password.
+   * Cleared after the user sets their own password.
+   */
+  @Column({ name: 'must_change_password', type: 'boolean', default: false })
+  mustChangePassword: boolean;
 
   @ManyToOne(() => Organization, { nullable: true, eager: true })
   @JoinColumn({ name: 'organization_id' })

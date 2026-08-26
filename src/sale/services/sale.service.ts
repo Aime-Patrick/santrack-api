@@ -16,10 +16,16 @@ import {
   requireOwnedLocation,
 } from '../../item/services/item.service';
 import { Organization } from '../../organization/entities/organization.entity';
+import { Product } from '../../product/entities/product.entity';
+import {
+  salesUnitPermitted,
+  sellableUnits,
+} from '../../product/sales-unit';
+import { requestedProductUnits } from '../../commerce/sales-line';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
 import { TransferService, nextReference } from '../../transfer/services/transfer.service';
-import { SellDto } from '../dto/sale.dto';
+import { SellDto, SellQuantityLineDto } from '../dto/sale.dto';
 import { Sale, SaleLine, SaleType } from '../entities/sale.entity';
 
 /**
@@ -75,8 +81,24 @@ export class SaleService {
         ? await requireOwnedLocation(manager, seller, dto.sellerLocationId)
         : null;
 
+      const scannedCodes = dto.itemQrCodes ?? [];
+      const quantityCodes = await this.resolveQuantityLines(
+        manager,
+        seller,
+        dto.quantityLines ?? [],
+      );
+      const allQrCodes = [...scannedCodes, ...quantityCodes];
+      if (allQrCodes.length === 0) {
+        throw new TraceabilityRuleException(
+          'Scan at least one item, or sell by quantity (piece, carton, box…)',
+        );
+      }
+
       const items: TraceableItem[] = [];
-      for (const qrCode of dto.itemQrCodes) {
+      const seen = new Set<string>();
+      for (const qrCode of allQrCodes) {
+        if (seen.has(qrCode)) continue;
+        seen.add(qrCode);
         const item = await this.itemService.require(qrCode, manager);
         requireHeldBy(item, seller);
         await this.requireSellable(manager, item);
@@ -137,6 +159,10 @@ export class SaleService {
         }
       }
 
+      // Stash resolved codes on the sale object for the post-commit dispatch.
+      (created as Sale & { _dispatchQrCodes?: string[] })._dispatchQrCodes =
+        items.map((i) => i.qrCode);
+
       return created;
     });
 
@@ -144,11 +170,15 @@ export class SaleService {
     // rather than jumping to the buyer on payment alone. Raised after the sale
     // commits so a dispatch failure cannot leave a half-written sale.
     if (dto.type === SaleType.BUSINESS) {
+      const dispatchCodes =
+        (sale as Sale & { _dispatchQrCodes?: string[] })._dispatchQrCodes ??
+        dto.itemQrCodes ??
+        [];
       const transfer = await this.transferService.dispatch(seller, actor, {
         destinationOrganizationId: dto.buyerOrganizationId as number,
         destinationLocationId: dto.deliveryLocationId,
         sourceLocationId: dto.sellerLocationId,
-        itemQrCodes: dto.itemQrCodes,
+        itemQrCodes: dispatchCodes,
         notes: `Sale ${sale.reference}`,
       });
       sale.transferId = transfer.id;
@@ -156,6 +186,63 @@ export class SaleService {
     }
 
     return { sale, lines: await this.saleLines.find({ where: { sale: { id: sale.id } } }) };
+  }
+
+  /**
+   * FEFO-pick whole identities that cover each quantity line's product units.
+   * Same accumulation rule as sales-order reservation (DR-09) — no splits.
+   */
+  private async resolveQuantityLines(
+    manager: EntityManager,
+    seller: Organization,
+    lines: SellQuantityLineDto[],
+  ): Promise<string[]> {
+    const qrCodes: string[] = [];
+
+    for (const line of lines) {
+      const product = await manager.findOne(Product, { where: { id: line.productId } });
+      if (!product || product.organizationId !== seller.id) {
+        throw new NotFoundEntityException('Product', line.productId);
+      }
+
+      const requested = parseFloat(line.requestedQuantity);
+      const salesUnit = resolveSalesUnit(product, line.salesUnit);
+      assertSalesUnit(product, salesUnit, requested);
+
+      const needed = requestedProductUnits(product, salesUnit, requested);
+
+      const candidates = await manager.find(TraceableItem, {
+        where: {
+          product: { id: product.id },
+          holder: { id: seller.id },
+          status: ItemStatus.ACTIVE,
+        },
+        order: {
+          expiresOn: 'ASC' as never,
+          id: 'ASC',
+        },
+      });
+      const available = candidates.filter((item) => !item.parent);
+      const availableUnits = available.reduce((sum, item) => sum + item.quantity, 0);
+
+      if (availableUnits < needed) {
+        const unitLabel = product.baseUnit ?? 'units';
+        throw new TraceabilityRuleException(
+          `Insufficient stock for ${product.name}: need ${needed} ${unitLabel}, ` +
+            `only ${availableUnits} ${unitLabel} available`,
+        );
+      }
+
+      let covered = 0;
+      for (const item of available) {
+        if (covered >= needed) break;
+        if (qrCodes.includes(item.qrCode)) continue;
+        qrCodes.push(item.qrCode);
+        covered += item.quantity;
+      }
+    }
+
+    return qrCodes;
   }
 
   /**
@@ -292,5 +379,43 @@ export class SaleService {
         );
       }
     }
+  }
+}
+
+function resolveSalesUnit(
+  product: Product,
+  requested: string | undefined,
+): string | null {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    return requested?.trim() || null;
+  }
+  return (requested?.trim() || product.baseUnit || offered[0]) ?? null;
+}
+
+function assertSalesUnit(
+  product: Product,
+  salesUnit: string | null,
+  requestedQuantity: number,
+): void {
+  const offered = sellableUnits(product);
+  if (offered.length === 0) {
+    if (salesUnit) {
+      const msg = salesUnitPermitted(product, salesUnit, requestedQuantity);
+      if (msg !== true) {
+        throw new TraceabilityRuleException(msg);
+      }
+    }
+    if (!Number.isFinite(requestedQuantity) || requestedQuantity <= 0) {
+      throw new TraceabilityRuleException(
+        `A sale line for ${product.name} needs a quantity above zero.`,
+      );
+    }
+    return;
+  }
+
+  const msg = salesUnitPermitted(product, salesUnit ?? '', requestedQuantity);
+  if (msg !== true) {
+    throw new TraceabilityRuleException(msg);
   }
 }

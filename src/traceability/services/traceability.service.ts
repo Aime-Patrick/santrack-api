@@ -7,8 +7,15 @@ import { TraceableItem, today } from '../../item/entities/traceable-item.entity'
 import { ItemStatus, blocksSale } from '../../item/item.enums';
 import { QualityInspection } from '../../manufacturing/entities/quality-inspection.entity';
 import { ProductionOrder, ProductionOrderMaterial } from '../../manufacturing/entities/production-order.entity';
+import { Organization } from '../../organization/entities/organization.entity';
+import { OrganizationType } from '../../organization/organization-type.enum';
 import { TraceabilityEvent } from '../entities/traceability-event.entity';
+import {
+  MAX_VERIFICATION_TOKEN,
+  VerificationAttempt,
+} from '../entities/verification-attempt.entity';
 import { EventType } from '../event-type.enum';
+import { EventRecorder } from './event-recorder.service';
 
 export interface TimelineEntry {
   eventId: number;
@@ -27,6 +34,18 @@ export interface TimelineEntry {
   viaContainer: string | null;
   /** Set when the entry is the lot history the identity inherited. */
   viaBatch: string | null;
+}
+
+/** One code and how often it has been presented for verification. */
+export interface VerificationAttemptSummary {
+  token: string;
+  known: boolean;
+  /** The human-readable code, where the token resolves to an identity. */
+  itemCode: string | null;
+  productName: string | null;
+  attempts: number;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
 }
 
 export interface VerificationResponse {
@@ -111,6 +130,9 @@ export class TraceabilityService {
     private readonly productionOrders: Repository<ProductionOrder>,
     @InjectRepository(ProductionOrderMaterial)
     private readonly orderMaterials: Repository<ProductionOrderMaterial>,
+    @InjectRepository(VerificationAttempt)
+    private readonly attempts: Repository<VerificationAttempt>,
+    private readonly recorder: EventRecorder,
   ) {}
 
   /**
@@ -188,6 +210,10 @@ export class TraceabilityService {
   async verify(token: string): Promise<VerificationResponse> {
     const item = await this.items.findOne({ where: { qrCode: token } });
 
+    // Before the early return, so a code that resolves to nothing is counted.
+    // That is the case this exists for.
+    await this.countVerificationAttempt(token, item);
+
     if (!item) {
       return {
         known: false,
@@ -215,6 +241,8 @@ export class TraceabilityService {
     const expired = item.isExpired(today()) || item.status === ItemStatus.EXPIRED;
     const blocked = recalled || expired || blocksSale(item.status);
 
+    await this.recordVerification(item, blocked);
+
     return {
       known: true,
       code: item.code,
@@ -232,6 +260,174 @@ export class TraceabilityService {
       blocked,
       verdict: verdict(item, recalled, expired),
     };
+  }
+
+  /**
+   * Writes down that somebody checked this code.
+   *
+   * Two rules, both deliberate.
+   *
+   * **It never breaks the answer.** This is a public endpoint a shopper hits
+   * standing in a shop, and the useful half of the response is the safety
+   * verdict. If the log write fails, they still get told the bottle was
+   * recalled. A verification refused because we could not record it would be
+   * the logging tail wagging the safety dog.
+   *
+   * **It records no scanner.** No account, no address, nothing identifying —
+   * the event says a code was checked, never who checked it. The value is in
+   * the code's own pattern: one genuine identity verified forty times across
+   * four towns in a week is a cloned label, and that shows up from the code
+   * alone.
+   *
+   * This handles known codes only, because a lifecycle event needs an identity
+   * to attach to. Codes that resolve to nothing are counted in
+   * `verification_attempts` instead — see `countVerificationAttempt`.
+   */
+  private async recordVerification(
+    item: TraceableItem,
+    blocked: boolean,
+  ): Promise<void> {
+    try {
+      await this.recorder.record(this.items.manager, {
+        item,
+        type: EventType.VERIFIED,
+        actor: null,
+        notes: blocked
+          ? `Consumer verification — reported as ${item.status}`
+          : 'Consumer verification — reported as genuine',
+      });
+    } catch {
+      // Deliberately swallowed. See the note above.
+    }
+  }
+
+  /**
+   * Counts one presentation of a code, whether or not we recognise it.
+   *
+   * The half `VERIFIED` cannot reach. An event needs an identity, so a
+   * fabricated code — the thing a counterfeiter actually prints — could be
+   * scanned a thousand times and leave nothing behind. This counts it.
+   *
+   * An upsert, one row per distinct code rather than per scan: the endpoint is
+   * public and anonymous, so a row per scan would let anyone with a loop decide
+   * how large the table gets. `known` and `item_id` are refreshed on the way
+   * through, because a code can be scanned before its identity is confirmed
+   * into stock and become legitimate later; the count and `first_seen_at`
+   * survive that, which is what makes the earlier scans legible.
+   *
+   * Fails silently for the same reason `recordVerification` does — a shopper
+   * standing in a shop is owed the safety verdict whatever the log is doing.
+   */
+  private async countVerificationAttempt(
+    token: string,
+    item: TraceableItem | null,
+  ): Promise<void> {
+    try {
+      // Written as raw SQL because the count has to accumulate. TypeORM's
+      // orUpdate() sets each column to the excluded row's value, which would
+      // pin `attempts` at 1 for ever and silently defeat the whole point.
+      await this.attempts.query(
+        `
+        INSERT INTO "verification_attempts"
+          ("token", "known", "item_id", "attempts", "first_seen_at", "last_seen_at")
+        VALUES ($1, $2, $3, 1, now(), now())
+        ON CONFLICT ("token") DO UPDATE SET
+          "attempts"     = "verification_attempts"."attempts" + 1,
+          "last_seen_at" = now(),
+          "known"        = EXCLUDED."known",
+          "item_id"      = EXCLUDED."item_id"
+        `,
+        [token.slice(0, MAX_VERIFICATION_TOKEN), item !== null, item?.id ?? null],
+      );
+    } catch {
+      // Deliberately swallowed. See the note above.
+    }
+  }
+
+  /**
+   * How many times this one code has been presented to the public endpoint.
+   *
+   * Carried on the trace response so an operator holding the thing sees it
+   * without going anywhere: a unit that has been verified forty times is worth
+   * a second look before it is dispatched again.
+   */
+  async verificationCountFor(token: string): Promise<number> {
+    const row = await this.attempts.findOne({ where: { token } });
+    return row?.attempts ?? 0;
+  }
+
+  /**
+   * Codes being scanned unusually often, most-scanned first.
+   *
+   * The counterfeit signal, and deliberately not a verdict. A high count means
+   * one printed code is being presented far more than one physical thing
+   * plausibly could be, which is what a cloned label looks like — and also what
+   * a display bottle on a shop counter looks like. It is a list to investigate,
+   * never evidence on its own, which is why the response says how many and
+   * since when and nothing more.
+   *
+   * `unknownOnly` narrows it to codes that resolve to nothing: labels printed
+   * for products that were never registered at all.
+   *
+   * **Scoped like everything else that names goods.** A regulator sees the
+   * platform; anyone else sees codes for stock they hold or made. Scan counts
+   * describe somebody's products, and a competitor's scan volume is exactly
+   * the kind of commercial fact this platform does not hand out.
+   *
+   * Codes that resolve to nothing belong to nobody, so they cannot be scoped
+   * that way and are shown to regulators only. That is the right home for
+   * them: a fabricated label is a platform-wide problem, not one manufacturer's
+   * — and a manufacturer who could list every unregistered code in circulation
+   * would learn what everyone else's codes look like.
+   */
+  async verificationAttempts(
+    organization: Organization,
+    options: { unknownOnly?: boolean; minAttempts?: number; limit?: number } = {},
+  ): Promise<VerificationAttemptSummary[]> {
+    const { unknownOnly = false, minAttempts = 1, limit = 50 } = options;
+    const isRegulator = organization.type === OrganizationType.REGULATOR;
+
+    // Nothing to show: unknown codes are regulator-only, so this combination
+    // is an empty answer rather than an unscoped one.
+    if (unknownOnly && !isRegulator) {
+      return [];
+    }
+
+    const query = this.attempts
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.item', 'item')
+      // Selected, not just joined: the summary reports the product name, and
+      // without this it comes back null on every known code.
+      .leftJoinAndSelect('item.product', 'product')
+      .leftJoin('item.batch', 'batch')
+      .where('a.attempts >= :minAttempts', { minAttempts })
+      .orderBy('a.attempts', 'DESC')
+      // Property name, not column name. orderBy resolves against entity
+      // metadata, and `a.last_seen_at` fails there with an error about
+      // `databaseName` that says nothing about the real cause.
+      .addOrderBy('a.lastSeenAt', 'DESC')
+      .take(Math.min(limit, 200));
+
+    if (unknownOnly) {
+      query.andWhere('a.known = false');
+    } else if (!isRegulator) {
+      query.andWhere(
+        '(item.holder_id = :org OR batch.manufacturer_id = :org)',
+        { org: organization.id },
+      );
+    }
+
+    const rows = await query.getMany();
+
+    return rows.map((row) => ({
+      token: row.token,
+      known: row.known,
+      itemCode: row.item?.code ?? null,
+      productName: row.item?.product?.name ?? null,
+      attempts: row.attempts,
+      firstSeenAt: row.firstSeenAt,
+      lastSeenAt: row.lastSeenAt,
+    }));
   }
 
   /**

@@ -22,6 +22,28 @@ pnpm migration:run            # applies the schema
 pnpm start:dev                # http://localhost:8081
 ```
 
+## Deploy on Render
+
+This API is meant for [Render](https://render.com) (not Vercel): NestJS, Postgres,
+Redis/BullMQ, Socket.IO and scheduled jobs need a long-running Node process.
+
+1. Push this repo to GitHub/GitLab.
+2. In Render: **New → Blueprint** → select the repo (uses `render.yaml`).
+3. When prompted, set:
+   - `CORS_ORIGINS` — your frontend origin(s), e.g. `https://your-app.vercel.app`
+   - `APP_PUBLIC_URL` — same origin (used in invite / reset email links)
+4. Deploy. Start runs migrations then `node dist/main.js`.
+5. Health check: `GET /api/health` → `{ "status": "ok" }`.
+6. Point the frontend API base URL at your Render service URL
+   (e.g. `https://santrack-api.onrender.com`).
+
+Free-tier notes: the web service spins down when idle (cold starts); Postgres and
+Key Value free instances expire if unused for a stretch — fine for demos, not for
+production. Upgrade plans when you go live.
+
+Optional email on Render: add `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
+on the web service if you want real mail instead of a no-op SMTP setup.
+
 ## Conformance suite
 
 `stock-api/scripts/traceability-walkthrough.mjs` talks plain HTTP and has no
@@ -194,16 +216,16 @@ non-compliant from their first action.
 
 ### File storage
 
-Certificates go through `StorageProvider`. Nothing in the application touches
-the filesystem directly, so adding Cloudinary is: write `CloudinaryStorage`
-implementing the interface, add a case to the switch in `StorageModule`, set
-`STORAGE_DRIVER=cloudinary`. No licensing code changes.
+Certificates go through `StorageProvider`. Drivers:
 
-Local disk generates its own stored filenames and never uses the uploaded one
-as a path — a filename arriving over HTTP is attacker-controlled. `signedUrl`
-returns null for local disk, so bytes stream through the API; a hosted driver
-returns a time-limited URL and certificates stop passing through the
-application at all.
+- `local` (default) — files under `STORAGE_LOCAL_ROOT`
+- `cloudinary` — set `STORAGE_DRIVER=cloudinary` plus `CLOUDINARY_CLOUD_NAME`,
+  `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` (optional `CLOUDINARY_FOLDER`)
+
+Nothing in licensing touches a concrete store. Local disk generates its own
+stored filenames and never uses the uploaded one as a path. `signedUrl`
+returns null for local disk, so bytes stream through the API; Cloudinary
+returns a time-limited authenticated URL.
 
 ### Grandfathering
 

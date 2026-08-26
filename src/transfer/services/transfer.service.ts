@@ -4,6 +4,7 @@ import { DataSource, EntityManager, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 
 import { User } from '../../auth/entities/user.entity';
+import { permitsTrade } from '../../batch/batch-status.enum';
 import {
   NotFoundEntityException,
   TraceabilityRuleException,
@@ -108,11 +109,31 @@ export class TransferService {
           );
         }
 
+        // Same gate as sale: a lot still waiting on QC (or rejected / held)
+        // must not leave the manufacturer. Sale already enforced this;
+        // dispatch used not to, which is how unfinished lots reached shops.
+        const members = await this.itemService.withDescendants(manager, item);
+        for (const member of members) {
+          const batch =
+            member.batch ??
+            (
+              await manager.findOne(TraceableItem, {
+                where: { id: member.id },
+                relations: { batch: true },
+              })
+            )?.batch;
+          if (batch && !permitsTrade(batch.status)) {
+            throw new TraceabilityRuleException(
+              `Lot ${batch.batchCode} is ${batch.status} and cannot be shipped until it is approved`,
+            );
+          }
+        }
+
         await manager.save(manager.create(TransferLine, { transfer, item }));
 
         // Custody stays with the source until receipt is confirmed; only the
         // status changes, so stock cannot be sold while it travels.
-        for (const member of await this.itemService.withDescendants(manager, item)) {
+        for (const member of members) {
           member.status = ItemStatus.IN_TRANSIT;
           await manager.save(TraceableItem, member);
         }

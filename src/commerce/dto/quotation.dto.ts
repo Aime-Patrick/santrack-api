@@ -21,8 +21,18 @@ export class QuotationLineDto {
   @MaxLength(200)
   description?: string;
 
+  /** Quantity in {@link salesUnit} (or bare product units when no units declared). */
   @IsNumberString({}, { message: 'Quantity is required' })
-  quantity: string;
+  requestedQuantity: string;
+
+  /**
+   * Commercial unit. Required when the product declares sellable units;
+   * omit for legacy catalogue rows with no base/pack unit.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  salesUnit?: string;
 
   @IsNumberString({}, { message: 'Unit price is required' })
   unitPrice: string;
@@ -94,4 +104,12 @@ export class RejectQuotationDto {
   @IsString()
   @MinLength(1, { message: 'A rejection needs a reason' })
   reason: string;
+}
+
+/** Explicit customer acceptance of warehouse rounding before confirm (DR-09). */
+export class AcceptRoundingDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  notes?: string;
 }

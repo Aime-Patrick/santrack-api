@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, ParseIntPipe } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability } from '../../auth/capabilities';
 import { CurrentUser, ActingOrg, RequireCapability } from '../../common/decorators';
@@ -42,6 +42,19 @@ export class QualityInspectionController {
       ...result,
       content: result.content.map(describeInspection),
     };
+  }
+
+  /**
+   * Declared before create so Nest does not treat "inspectability" as a
+   * resource id. Answers whether Record verdict would succeed for this lot.
+   */
+  @Get('inspectability')
+  @RequireCapability(Capability.PERFORM_QC)
+  async inspectability(
+    @ActingOrg() organization: Organization,
+    @Query('batchId', ParseIntPipe) batchId: number,
+  ) {
+    return this.inspections.inspectability(organization, batchId);
   }
 }
 

@@ -43,7 +43,7 @@ export class CreateCustomerDto {
 
   @IsOptional()
   @IsInt()
-  creditLimit?: number;
+  creditLimit?: number | null;
 
   @IsOptional()
   @IsBoolean()
@@ -94,7 +94,7 @@ export class UpdateCustomerDto {
 
   @IsOptional()
   @IsInt()
-  creditLimit?: number;
+  creditLimit?: number | null;
 
   @IsOptional()
   @IsBoolean()

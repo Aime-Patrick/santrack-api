@@ -1,0 +1,59 @@
+# SANTRACK API on Render
+# https://render.com/docs/blueprint-spec
+#
+# Dashboard → New → Blueprint → connect this repo.
+# After first deploy: set CORS_ORIGINS and APP_PUBLIC_URL on the web service
+# (your Vercel frontend origin, e.g. https://your-app.vercel.app).
+
+databases:
+  - name: santrack-db
+    plan: free
+    databaseName: santrack
+    user: santrack
+
+services:
+  - type: keyvalue
+    name: santrack-redis
+    plan: free
+    # BullMQ jobs must not be evicted under memory pressure.
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+  - type: web
+    name: santrack-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:render
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: santrack-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: santrack-redis
+          type: keyvalue
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 24h
+      - key: CORS_ORIGINS
+        sync: false
+      - key: APP_PUBLIC_URL
+        sync: false
+      - key: LICENSING_ENFORCEMENT
+        value: advisory
+      - key: STORAGE_DRIVER
+        value: local
+      - key: EMAIL_PROVIDER
+        value: smtp
+      - key: EMAIL_FROM
+        value: noreply@santrack.rw

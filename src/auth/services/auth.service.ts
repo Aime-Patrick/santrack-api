@@ -7,8 +7,10 @@ import { compare, hash } from 'bcryptjs';
 import {
   DuplicateException,
   InvalidCredentialsException,
+  TraceabilityRuleException,
 } from '../../common/errors';
 import { Organization } from '../../organization/entities/organization.entity';
+import { ChangePasswordDto } from '../dto/user-management.dto';
 import { LoginDto, RegisterDto } from '../dto/auth.dto';
 import {
   CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE,
@@ -24,9 +26,10 @@ export interface AuthResult {
   user: {
     id: number;
     email: string;
-    fullName: string;
+    fullName: string | null;
     role: UserRole;
     organization: { id: number; name: string; type: string } | null;
+    mustChangePassword: boolean;
     /**
      * Everything this person may do, already resolved from their role and
      * their organization's standing.
@@ -79,6 +82,7 @@ export class AuthService {
         fullName: dto.fullName.trim(),
         role: UserRole.ORG_ADMIN,
         organization: null,
+        mustChangePassword: false,
       }),
     );
 
@@ -98,6 +102,7 @@ export class AuthService {
         fullName: true,
         role: true,
         passwordHash: true,
+        mustChangePassword: true,
       },
       relations: { organization: true },
     });
@@ -107,6 +112,44 @@ export class AuthService {
     if (!user || !(await compare(dto.password, user.passwordHash))) {
       throw new InvalidCredentialsException();
     }
+
+    return this.issue(user);
+  }
+
+  /**
+   * Replaces the caller's password. Required after an invite or admin reset
+   * (`mustChangePassword`), and available anytime from account settings.
+   */
+  async changePassword(actor: User, dto: ChangePasswordDto): Promise<AuthResult> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        passwordHash: true,
+        mustChangePassword: true,
+      },
+      relations: { organization: true },
+    });
+    if (!user) {
+      throw new InvalidCredentialsException();
+    }
+
+    if (!(await compare(dto.currentPassword, user.passwordHash))) {
+      throw new TraceabilityRuleException('Current password is incorrect');
+    }
+
+    if (dto.currentPassword === dto.newPassword) {
+      throw new TraceabilityRuleException(
+        'New password must be different from the current password',
+      );
+    }
+
+    user.passwordHash = await hash(dto.newPassword, 10);
+    user.mustChangePassword = false;
+    await this.users.save(user);
 
     return this.issue(user);
   }
@@ -163,6 +206,7 @@ export class AuthService {
             type: user.organization.type,
           }
         : null,
+      mustChangePassword: !!user.mustChangePassword,
       capabilities: capabilitiesFor(user.role, user.organization?.type),
     };
   }

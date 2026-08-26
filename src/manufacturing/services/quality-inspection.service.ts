@@ -116,6 +116,47 @@ export class QualityInspectionService {
     return { content, total, page, size };
   }
 
+  /**
+   * Whether a lot may take a new verdict, checked before the form is submitted.
+   *
+   * Same rules as create — status must allow inspection, and none of the lot
+   * may have been dispatched or sold. Exposed so the UI can refuse early
+   * instead of only after Record verdict.
+   */
+  async inspectability(
+    organization: Organization,
+    batchId: number,
+  ): Promise<{ allowed: boolean; reason: string | null }> {
+    const batch = await this.dataSource.getRepository(Batch).findOne({
+      where: { id: batchId },
+      relations: { manufacturer: true },
+    });
+    if (!batch) {
+      throw new NotFoundEntityException('Batch', batchId);
+    }
+    if (batch.manufacturer && batch.manufacturer.id !== organization.id) {
+      throw new NotFoundEntityException('Batch', batchId);
+    }
+
+    if (!permitsInspection(batch.status)) {
+      return {
+        allowed: false,
+        reason: `Lot ${batch.batchCode} is ${batch.status} and cannot be inspected.`,
+      };
+    }
+
+    if (await this.hasEnteredCirculation(this.dataSource.manager, batch)) {
+      return {
+        allowed: false,
+        reason:
+          `Some of lot ${batch.batchCode} was already shipped or sold. ` +
+          'You cannot change the quality verdict. Start a recall instead.',
+      };
+    }
+
+    return { allowed: true, reason: null };
+  }
+
   // ---------------------------------------------------------------- private
 
   private async resolveBatch(

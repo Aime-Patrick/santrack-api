@@ -246,8 +246,13 @@ export class ProductionService {
       // The batch is created here — at order creation, not at completion.
       // This is the canonical lifecycle: the lot identity exists from the
       // moment the order is planned, so every subsequent event (production
-      // start, material issue, completion, QC) can address it.  The batch
-      // starts ACTIVE; completion moves it to PENDING_QC.
+      // start, material issue, completion, QC) can address it.
+      //
+      // Starts PENDING_QC, not ACTIVE. ACTIVE would let Confirm Output and
+      // dispatch treat the lot as cleared before anyone inspected it — which
+      // is how goods left the plant without a verdict. Catalogue / opening
+      // stock lots still default to ACTIVE; only production-made lots wait
+      // on QC.
       const batch = await manager.save(
         manager.create(Batch, {
           product,
@@ -258,6 +263,9 @@ export class ProductionService {
           facilityId: order.facilityId,
           manufacturedOn: null,
           expiresOn: null,
+          status: BatchStatus.PENDING_QC,
+          statusReason: 'Awaiting quality control after production',
+          statusChangedAt: new Date(),
         }),
       );
       order.batch = batch;
@@ -548,9 +556,9 @@ export class ProductionService {
         notes: `Produced ${producedQuantity} — lot awaiting quality control`,
       });
 
-      // Move the lot to PENDING_QC. The batch was created at order creation
-      // as ACTIVE; completion means the run is done and the lot is ready for
-      // inspection. The audit trail records the transition.
+      // Keep / move the lot at PENDING_QC. Production lots are created that
+      // way; completion is when the manufacture date is stamped and QC is
+      // asked to look. Catalogue lots created as ACTIVE are not on this path.
       if (order.batch) {
         order.batch.manufacturedOn = manufacturedOn;
         if (dto?.expiresOn) {

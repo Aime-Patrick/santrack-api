@@ -8,16 +8,25 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Query,
+  Res,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Not, Repository } from 'typeorm';
+import { Response } from 'express';
+import { Repository } from 'typeorm';
 import { Capability } from '../../auth/capabilities';
-import { RequireCapability } from '../../common/decorators';
+import { User } from '../../auth/entities/user.entity';
+import {
+  ActingOrg,
+  CurrentUser,
+  RequireCapability,
+} from '../../common/decorators';
 import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { Organization } from '../../organization/entities/organization.entity';
 import {
   CreateProductCategoryDto,
   UpdateProductCategoryDto,
@@ -25,6 +34,7 @@ import {
 import { Product } from '../entities/product.entity';
 import { ProductCategory } from '../entities/product-category.entity';
 import { deriveCode } from '../derive-code';
+import { CategoryShareService } from '../services/category-share.service';
 
 /**
  * The canonical product taxonomy.
@@ -54,6 +64,7 @@ export class ProductCategoryController {
     private readonly categories: Repository<ProductCategory>,
     @InjectRepository(Product)
     private readonly products: Repository<Product>,
+    private readonly shares: CategoryShareService,
   ) {}
 
   /**
@@ -72,7 +83,10 @@ export class ProductCategoryController {
 
   @Post()
   @RequireCapability(Capability.MANAGE_CATALOG)
-  async create(@Body() dto: CreateProductCategoryDto) {
+  async create(
+    @CurrentUser() actor: User,
+    @Body() dto: CreateProductCategoryDto,
+  ) {
     const name = dto.name.trim();
     const code = dto.code?.trim().toUpperCase() ?? deriveCode(name);
     if (!code) {
@@ -83,8 +97,6 @@ export class ProductCategoryController {
 
     const clash = await this.categories.findOne({ where: { code } });
     if (clash) {
-      // Named rather than coded: whoever hit this typed a name, and the code
-      // is machinery they never saw.
       throw new TraceabilityRuleException(
         `${clash.name} already covers this — pick a different name`,
       );
@@ -99,7 +111,82 @@ export class ProductCategoryController {
         active: true,
       }),
     );
-    return this.describe(category, {});
+
+    const base = this.describe(category, {});
+    // Share links are org-scoped. Platform operators without an org still
+    // create the taxonomy node; manufacturers mint their link when they share.
+    if (actor.organization) {
+      const share = await this.shares.ensure(
+        category.id,
+        actor.organization,
+        actor,
+      );
+      return { ...base, share };
+    }
+    return base;
+  }
+
+  /**
+   * Declared before `:id` routes that would otherwise swallow the path.
+   * Live share link for the acting organization — minted on first request.
+   */
+  @Get(':id/share-link')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async shareLink(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.shares.ensure(id, organization, actor);
+  }
+
+  @Post(':id/share-link/rotate')
+  @RequireCapability(Capability.MANAGE_CATALOG)
+  async rotateShareLink(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.shares.rotate(id, organization, actor);
+  }
+
+  @Get(':id/share-link/qr')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async shareQr(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Query('format') format: string | undefined,
+    @Res() response: Response,
+  ): Promise<void> {
+    const label = await this.shares.renderQr(
+      id,
+      organization,
+      format === 'svg' ? 'svg' : 'png',
+      actor,
+    );
+
+    response
+      .type(label.contentType)
+      .setHeader(
+        'Content-Disposition',
+        `attachment; filename="${label.filename}"`,
+      )
+      .send(label.body);
+  }
+
+  /**
+   * Category overview for the acting organization: products filed here, lot
+   * and unit lifecycle counts, subcategories, and the share QR link.
+   */
+  @Get(':id')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async get(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.shares.getDetail(id, organization, actor);
   }
 
   @Patch(':id')

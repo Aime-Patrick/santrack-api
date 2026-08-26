@@ -7,6 +7,7 @@ import { BullModule } from '@nestjs/bullmq';
 
 import configuration from './config/configuration';
 import { ENTITIES, dataSourceOptions } from './config/data-source';
+import { HealthController } from './health.controller';
 
 import { EmailModule } from './email/email.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -85,6 +86,16 @@ import { QuotationService } from './commerce/services/quotation.service';
 import { SalesOrderService } from './commerce/services/sales-order.service';
 import { SalesReturnService } from './commerce/services/sales-return.service';
 
+import { SupplierController } from './purchasing/controllers/supplier.controller';
+import { PurchaseOrderController } from './purchasing/controllers/purchase-order.controller';
+import { Supplier } from './purchasing/entities/supplier.entity';
+import {
+  PurchaseOrder,
+  PurchaseOrderLine,
+} from './purchasing/entities/purchase-order.entity';
+import { SupplierService } from './purchasing/services/supplier.service';
+import { PurchaseOrderService } from './purchasing/services/purchase-order.service';
+
 import { AccountController } from './finance/controllers/account.controller';
 import { BudgetController } from './finance/controllers/budget.controller';
 import { CostCentreController } from './finance/controllers/cost-centre.controller';
@@ -147,6 +158,8 @@ import { FacilityService } from './organization/services/facility.service';
 import { ProductController } from './product/controllers/product.controller';
 import { BrandController } from './product/controllers/brand.controller';
 import { ProductCategoryController } from './product/controllers/product-category.controller';
+import { PublicCategoryController } from './product/controllers/public-category.controller';
+import { CategoryShareService } from './product/services/category-share.service';
 import { Product } from './product/entities/product.entity';
 import { ProductService } from './product/services/product.service';
 
@@ -202,6 +215,10 @@ import { AuditLog } from './security/entities/audit-log.entity';
 import { RateLimitGuard } from './security/rate-limit.guard';
 import { SecurityModule } from './security/security.module';
 
+import { RedisCacheService } from './cache/redis-cache.service';
+import { SearchController } from './search/search.controller';
+import { SearchService } from './search/search.service';
+
 /**
  * A modular monolith, one module per bounded concern, exactly as the technical
  * proposal's section 13 application layer describes. They are wired together
@@ -222,12 +239,18 @@ import { SecurityModule } from './security/security.module';
     SecurityModule,
     BullModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.getOrThrow<string>('redis.host'),
-          port: config.getOrThrow<number>('redis.port'),
-        },
-      }),
+      useFactory: (config: ConfigService) => {
+        const url = config.get<string>('redis.url');
+        if (url) {
+          return { connection: { url } };
+        }
+        return {
+          connection: {
+            host: config.getOrThrow<string>('redis.host'),
+            port: config.getOrThrow<number>('redis.port'),
+          },
+        };
+      },
     }),
     EmailModule,
     NotificationsModule,
@@ -247,6 +270,7 @@ import { SecurityModule } from './security/security.module';
     }),
   ],
   controllers: [
+    HealthController,
     AuthController,
     BarcodeController,
     ScanController,
@@ -256,6 +280,7 @@ import { SecurityModule } from './security/security.module';
     LocationController,
     ProductController,
     ProductCategoryController,
+    PublicCategoryController,
     BrandController,
     BatchController,
     IdentityPoolController,
@@ -290,6 +315,8 @@ import { SecurityModule } from './security/security.module';
     SalesOrderController,
     InvoiceController,
     SalesReturnController,
+    SupplierController,
+    PurchaseOrderController,
     AccountController,
     CostCentreController,
     JournalController,
@@ -302,6 +329,7 @@ import { SecurityModule } from './security/security.module';
     LeaveController,
     PayrollRunController,
     PayrollReportController,
+    SearchController,
   ],
   providers: [
     // Runs ahead of authentication so an unauthenticated flood is turned away
@@ -317,12 +345,15 @@ import { SecurityModule } from './security/security.module';
     // append-only audit log before its response goes out.
     { provide: APP_INTERCEPTOR, useClass: AuditInterceptor },
 
+    RedisCacheService,
+    SearchService,
     AuthService,
     UserManagementService,
     OrganizationService,
     FacilityService,
     LocationService,
     ProductService,
+    CategoryShareService,
     BatchService,
     ItemCodeGenerator,
     IdentityPoolService,
@@ -362,6 +393,8 @@ import { SecurityModule } from './security/security.module';
     SalesOrderService,
     InvoiceService,
     SalesReturnService,
+    SupplierService,
+    PurchaseOrderService,
     AccountService,
     CostCentreService,
     JournalService,
@@ -378,4 +411,4 @@ import { SecurityModule } from './security/security.module';
 })
 export class AppModule {}
 
-export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog };
+export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog };

@@ -1,4 +1,4 @@
-import { Controller, Get, Param } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability, capabilitiesFor } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
@@ -45,6 +45,43 @@ export class TraceController {
    * inventory page and four operation pages meant re-entering a code that had
    * just been scanned, which is how the wrong pallet gets dispatched.
    */
+  /**
+   * Codes being scanned far more often than one physical thing could be.
+   *
+   * Lives here rather than on a screen of its own: this is the counterfeit
+   * question, and the counterfeit question is answered on the trace screen,
+   * where the operator already is. `?unknownOnly=true` narrows it to codes
+   * that resolve to no identity at all.
+   *
+   * Declared before `:qrCode` deliberately — Nest matches routes in
+   * declaration order, and a wildcard segment above it would swallow this
+   * path and try to trace an item called "verification-attempts".
+   */
+  @Get('verification-attempts')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async verificationAttempts(
+    @ActingOrg() organization: Organization,
+    @Query('unknownOnly') unknownOnly?: string,
+    @Query('minAttempts') minAttempts?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const attempts = await this.traceability.verificationAttempts(organization, {
+      unknownOnly: unknownOnly === 'true',
+      minAttempts: minAttempts ? parseInt(minAttempts, 10) : 1,
+      limit: limit ? parseInt(limit, 10) : 50,
+    });
+
+    return {
+      attempts,
+      /**
+       * Said out loud in the payload because a count is not a verdict. A
+       * display bottle on a shop counter gets scanned all day by curious
+       * customers and is not a fake.
+       */
+      note: 'Scan counts are a signal to investigate, not evidence of counterfeiting on their own.',
+    };
+  }
+
   @Get(':qrCode')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async timeline(
@@ -139,6 +176,13 @@ export class TraceController {
       }),
       batchDetail,
       manufacturerCompliance,
+      /**
+       * How many times the public verification endpoint has been asked about
+       * this code. Includes scans that happened before it was a known
+       * identity, which is why it can exceed the VERIFIED events on the
+       * timeline rather than matching them.
+       */
+      verificationCount: await this.traceability.verificationCountFor(item.qrCode),
       eventCount: entries.length,
       events: entries,
     };

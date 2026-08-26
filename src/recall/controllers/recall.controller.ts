@@ -28,6 +28,13 @@ export class RecallController {
     return this.recalls.list();
   }
 
+  /** One recalled lot with full impact — used by the recall detail page. */
+  @Get('batches/:batchId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async get(@Param('batchId', ParseIntPipe) batchId: number) {
+    return this.recalls.get(batchId);
+  }
+
   /** Pull a production lot, wherever its units currently sit. */
   @Post()
   @RequireCapability(Capability.MANAGE_RECALL)

@@ -21,8 +21,10 @@ import { Organization } from '../organization/entities/organization.entity';
 import { Product } from '../product/entities/product.entity';
 import { Brand } from '../product/entities/brand.entity';
 import { ProductCategory } from '../product/entities/product-category.entity';
+import { CategoryShareLink } from '../product/entities/category-share-link.entity';
 import { Sale, SaleLine } from '../sale/entities/sale.entity';
 import { TraceabilityEvent } from '../traceability/entities/traceability-event.entity';
+import { VerificationAttempt } from '../traceability/entities/verification-attempt.entity';
 import { Transfer, TransferLine } from '../transfer/entities/transfer.entity';
 import {
   BillOfMaterial,
@@ -43,6 +45,11 @@ import { Quotation, QuotationLine } from '../commerce/entities/quotation.entity'
 import { SalesReturn } from '../commerce/entities/sales-return.entity';
 import { SalesOrder, SalesOrderLine } from '../commerce/entities/sales-order.entity';
 import { SalesOrderReservation } from '../commerce/entities/sales-order-reservation.entity';
+import { Supplier } from '../purchasing/entities/supplier.entity';
+import {
+  PurchaseOrder,
+  PurchaseOrderLine,
+} from '../purchasing/entities/purchase-order.entity';
 import { Account } from '../finance/entities/account.entity';
 import { Budget } from '../finance/entities/budget.entity';
 import { CostCentre } from '../finance/entities/cost-centre.entity';
@@ -76,12 +83,14 @@ export const ENTITIES = [
   Location,
   Product,
   ProductCategory,
+  CategoryShareLink,
   Brand,
   Batch,
   TraceableItem,
   IdentityPool,
   CodeSequence,
   TraceabilityEvent,
+  VerificationAttempt,
   Transfer,
   TransferLine,
   Sale,
@@ -115,6 +124,9 @@ export const ENTITIES = [
   Invoice,
   Payment,
   SalesReturn,
+  Supplier,
+  PurchaseOrder,
+  PurchaseOrderLine,
   Account,
   CostCentre,
   JournalEntry,
@@ -132,13 +144,40 @@ export const ENTITIES = [
   Notification,
 ];
 
+/**
+ * Render (and most managed Postgres hosts) inject DATABASE_URL with SSL.
+ * Local docker-compose keeps using the discrete DB_* variables.
+ */
+function postgresConnection(): {
+  url?: string;
+  host?: string;
+  port?: number;
+  database?: string;
+  username?: string;
+  password?: string;
+  ssl?: boolean | { rejectUnauthorized: boolean };
+} {
+  const url = process.env.DATABASE_URL?.trim();
+  if (url) {
+    const wantSsl = process.env.DB_SSL !== 'false';
+    return {
+      url,
+      ssl: wantSsl ? { rejectUnauthorized: false } : undefined,
+    };
+  }
+
+  return {
+    host: process.env.DB_HOST ?? 'localhost',
+    port: parseInt(process.env.DB_PORT ?? '5433', 10),
+    database: process.env.DB_NAME ?? 'stock_manager',
+    username: process.env.DB_USER ?? 'stock',
+    password: process.env.DB_PASSWORD ?? 'stock_dev',
+  };
+}
+
 export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
-  host: process.env.DB_HOST ?? 'localhost',
-  port: parseInt(process.env.DB_PORT ?? '5433', 10),
-  database: process.env.DB_NAME ?? 'stock_manager',
-  username: process.env.DB_USER ?? 'stock',
-  password: process.env.DB_PASSWORD ?? 'stock_dev',
+  ...postgresConnection(),
   entities: ENTITIES,
   migrations: [__dirname + '/../migrations/*.{ts,js}'],
   /**

@@ -68,28 +68,53 @@ export class RecallService {
 
     const results = [];
     for (const batch of recalled) {
-      const impact = await this.impact(batch.id);
-      results.push({
-        batchId: batch.id,
-        batchNumber: batch.batchCode,
-        reason: batch.statusReason ?? 'No reason provided',
-        recallDate: batch.statusChangedAt?.toISOString() ?? batch.createdAt.toISOString(),
-        initiatedBy: batch.manufacturer?.name ?? 'Unknown',
-        // Units, as the field name says. This passed totalIdentities, which
-        // under batch traceability would report a 10,000-unit recall as 1.
-        affectedUnits: impact.totalUnits,
-        affectedIdentities: impact.totalIdentities,
-        impactedLocations: impact.holders.map((h) => ({
-          locationId: h.organizationId ?? 0,
-          locationName: h.organizationName ?? 'Unknown',
-          eventType: h.status,
-          qty: h.units,
-          identities: h.count,
-        })),
-      });
+      results.push(await this.describeRecall(batch));
     }
 
     return results;
+  }
+
+  /** One recalled lot with full impact — for the recall detail page. */
+  async get(batchId: number) {
+    const batch = await this.batches.findOne({
+      where: { id: batchId },
+      relations: { manufacturer: true, product: true },
+    });
+    if (!batch) {
+      throw new NotFoundEntityException('Batch', batchId);
+    }
+    if (batch.status !== BatchStatus.RECALLED) {
+      throw new TraceabilityRuleException(
+        `Batch ${batch.batchCode} is ${batch.status}, not under recall`,
+      );
+    }
+    return this.describeRecall(batch);
+  }
+
+  private async describeRecall(batch: Batch) {
+    const impact = await this.impact(batch.id);
+    return {
+      batchId: batch.id,
+      batchNumber: batch.batchCode,
+      productName: batch.product?.name ?? 'Unknown product',
+      productSku: batch.product?.sku ?? null,
+      manufacturerName: batch.manufacturer?.name ?? null,
+      reason: batch.statusReason ?? 'No reason provided',
+      recallDate: batch.statusChangedAt?.toISOString() ?? batch.createdAt.toISOString(),
+      initiatedBy: batch.manufacturer?.name ?? 'Unknown',
+      affectedUnits: impact.totalUnits,
+      affectedIdentities: impact.totalIdentities,
+      recoverableUnits: impact.recoverableUnits,
+      soldUnits: impact.soldUnits,
+      destroyedUnits: impact.destroyedUnits,
+      impactedLocations: impact.holders.map((h) => ({
+        locationId: h.organizationId ?? 0,
+        locationName: h.organizationName ?? 'Unknown',
+        eventType: h.status,
+        qty: h.units,
+        identities: h.count,
+      })),
+    };
   }
 
   /**

@@ -71,11 +71,35 @@ export enum EventType {
   RETURNED = 'RETURNED',
   RECALLED = 'RECALLED',
   QUARANTINED = 'QUARANTINED',
-  /** Released from quarantine or return back into normal stock. */
+  /**
+   * Back into normal stock, from wherever it was being held aside: released
+   * from quarantine, released after a return was inspected, or released from
+   * a sales-order reservation when that order is cancelled (DR-09 WU-6).
+   *
+   * Deliberately one event rather than three. All three describe the same
+   * physical transition — goods that were unavailable are available again —
+   * and the reservation case is told apart by its notes and by the
+   * reservation rows, which are never deleted.
+   */
   RELEASED = 'RELEASED',
   EXPIRED = 'EXPIRED',
   DAMAGED = 'DAMAGED',
   DESTROYED = 'DESTROYED',
+  /**
+   * Somebody asked what this identity is — a shopper scanning a bottle, an
+   * inspector checking a shelf (proposal section 7, `VERIFY`).
+   *
+   * The odd one out in this enum: nothing about the product changes, and the
+   * item's status is the same after as before. It is recorded anyway, because
+   * on a counterfeit the pattern of scans *is* the evidence. One genuine code
+   * verified forty times in four towns in a week is a cloned label, and that
+   * is only visible if the scans were written down.
+   *
+   * Deliberately anonymous. The public endpoint has no account behind it, and
+   * the scanner's address is not recorded — a verification says a code was
+   * checked, never who checked it.
+   */
+  VERIFIED = 'VERIFIED',
   /** Compensating entry that corrects an earlier event (business rule 14). */
   CORRECTION = 'CORRECTION',
 }

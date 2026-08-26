@@ -82,6 +82,18 @@ export class SalesOrder {
   @Column({ name: 'sale_id', type: 'int', nullable: true })
   saleId: number | null;
 
+  /**
+   * When fulfilment rounds up from the requested quantity (sales unit finer
+   * than identity size), the customer must accept the difference before
+   * confirm. Null means no rounding was needed, or it has not been accepted.
+   */
+  @Column({ name: 'rounding_accepted_at', type: 'timestamptz', nullable: true })
+  roundingAcceptedAt: Date | null;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'rounding_accepted_by_id' })
+  roundingAcceptedBy: User | null;
+
   /** The identities committed to this order by confirm(). */
   @OneToMany(() => SalesOrderReservation, (r) => r.order)
   reservations: SalesOrderReservation[];
@@ -107,8 +119,26 @@ export class SalesOrderLine {
   @Column({ type: 'varchar', nullable: true })
   description: string | null;
 
-  @Column({ type: 'numeric', precision: 14, scale: 3, nullable: false })
-  quantity: string;
+  /**
+   * What the customer asked for, in {@link salesUnit}. Written once at entry;
+   * never overwritten by warehouse rounding (DR-09 D2).
+   */
+  @Column({ name: 'requested_quantity', type: 'numeric', precision: 14, scale: 3, nullable: false })
+  requestedQuantity: string;
+
+  /**
+   * Commercial unit the deal was struck in. Null on historic rows = bare
+   * product units (no pack conversion).
+   */
+  @Column({ name: 'sales_unit', type: 'varchar', nullable: true })
+  salesUnit: string | null;
+
+  /**
+   * Product units required to satisfy the request with whole identities.
+   * Null until confirm(); backfilled to requested on migration for old rows.
+   */
+  @Column({ name: 'fulfilment_quantity', type: 'numeric', precision: 14, scale: 3, nullable: true })
+  fulfilmentQuantity: string | null;
 
   @Column({ name: 'unit_price', type: 'numeric', precision: 14, scale: 2, nullable: false })
   unitPrice: string;
