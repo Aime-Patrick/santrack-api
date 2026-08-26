@@ -4,6 +4,9 @@
 # Dashboard → New → Blueprint → connect this repo.
 # After first deploy: set CORS_ORIGINS and APP_PUBLIC_URL on the web service
 # (your Vercel frontend origin, e.g. https://your-app.vercel.app).
+#
+# If you created the service manually (not Blueprint), set Build/Start below
+# in the dashboard — free tier OOMs if Start is still `pnpm start` → nest start.
 
 databases:
   - name: santrack-db
@@ -24,12 +27,16 @@ services:
     runtime: node
     plan: free
     region: oregon
-    buildCommand: npm ci && npm run build
-    startCommand: npm run start:render
+    # Cap the Node heap under the ~512MB free instance so nest build can finish.
+    buildCommand: NODE_OPTIONS=--max-old-space-size=460 pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=460 pnpm run build
+    # Never use nest start here — it recompiles TS and OOMs on free tier.
+    startCommand: pnpm run start:render
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=400
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: DATABASE_URL

@@ -37,6 +37,18 @@ Redis/BullMQ, Socket.IO and scheduled jobs need a long-running Node process.
 6. Point the frontend API base URL at your Render service URL
    (e.g. `https://santrack-api.onrender.com`).
 
+### Manual service (not Blueprint)
+
+In **Settings → Build & Deploy** set:
+
+| Field | Value |
+| --- | --- |
+| Build Command | `NODE_OPTIONS=--max-old-space-size=460 pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=460 pnpm run build` |
+| Start Command | `pnpm run start:render` |
+
+Do **not** use `pnpm start` / `nest start` on Render — that recompiles TypeScript
+and hits JavaScript heap OOM on the free plan.
+
 Free-tier notes: the web service spins down when idle (cold starts); Postgres and
 Key Value free instances expire if unused for a stretch — fine for demos, not for
 production. Upgrade plans when you go live.
