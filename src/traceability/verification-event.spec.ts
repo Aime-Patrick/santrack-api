@@ -301,3 +301,41 @@ describe('who may read scan counts', () => {
     expect(h.conditions.some((c) => /a\.known = false/.test(c.sql))).toBe(true);
   });
 });
+
+describe('sold units still verify; wrong label type is explained', () => {
+  it('reports a sold identity as known and sold', async () => {
+    const sold = {
+      ...genuine,
+      status: ItemStatus.SOLD,
+      isExpired: () => false,
+    };
+    const h = harness(sold);
+
+    const answer = await h.service.verify('qr-100');
+
+    expect(answer.known).toBe(true);
+    expect(answer.itemStatus).toBe(ItemStatus.SOLD);
+    expect(answer.verdict).toMatch(/sold/i);
+  });
+
+  it('lower-cases UUID tokens before lookup', async () => {
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    const h = harness({ ...genuine, qrCode: uuid });
+
+    await h.service.verify(uuid.toUpperCase());
+
+    expect(h.items.findOne).toHaveBeenCalledWith({
+      where: { qrCode: uuid },
+    });
+  });
+
+  it('tells shoppers who paste an ST- serial to scan the QR instead', async () => {
+    const h = harness(null);
+
+    const answer = await h.service.verify('ST-LPT-000001');
+
+    expect(answer.known).toBe(false);
+    expect(answer.verdict).toMatch(/printed serial/i);
+    expect(answer.verdict).toMatch(/QR/i);
+  });
+});

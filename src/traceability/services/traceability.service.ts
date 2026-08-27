@@ -208,11 +208,14 @@ export class TraceabilityService {
    * one increment at a time (proposal section 16).
    */
   async verify(token: string): Promise<VerificationResponse> {
-    const item = await this.items.findOne({ where: { qrCode: token } });
+    const normalized = normalizeVerifyToken(token);
+    // Opaque QR payload only — never the printed ST- serial (enumeration).
+    // UUID case is normalised because some scanners upper-case hex.
+    const item = await this.items.findOne({ where: { qrCode: normalized } });
 
     // Before the early return, so a code that resolves to nothing is counted.
     // That is the case this exists for.
-    await this.countVerificationAttempt(token, item);
+    await this.countVerificationAttempt(normalized, item);
 
     if (!item) {
       return {
@@ -230,8 +233,7 @@ export class TraceabilityService {
         expired: false,
         recalled: false,
         blocked: false,
-        verdict:
-          'This code is not registered. Treat the product as unverified.',
+        verdict: unknownVerifyVerdict(normalized),
       };
     }
 
@@ -564,4 +566,52 @@ function verdict(item: TraceableItem, recalled: boolean, expired: boolean): stri
     default:
       return 'Genuine and in good standing.';
   }
+}
+
+const UUID_TOKEN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Peel phone-camera / paste noise off a verify token before lookup.
+ * Does not accept ST- serials — only shapes the opaque QR payload.
+ */
+function normalizeVerifyToken(raw: string): string {
+  let token = (raw ?? '').trim().replace(/^["']|["']$/g, '');
+  try {
+    token = decodeURIComponent(token);
+  } catch {
+    // keep raw
+  }
+  token = token.trim();
+
+  if (token.includes('/verify/')) {
+    token =
+      token.split('/verify/').pop()?.split('?')[0].split('#')[0].trim() ?? token;
+  }
+
+  if (UUID_TOKEN.test(token)) {
+    return token.toLowerCase();
+  }
+  return token;
+}
+
+/**
+ * Unknown codes get different copy when the scan is clearly the wrong kind of
+ * label (printed serial / retail GTIN). We deliberately do not look those up —
+ * confirming whether ST-000123 exists would re-open catalogue enumeration.
+ */
+function unknownVerifyVerdict(token: string): string {
+  if (/^ST-/i.test(token) || /^[A-Z]{2,}-[A-Z0-9]+-\d+/i.test(token)) {
+    return (
+      'That looks like a printed serial, not the unit QR. ' +
+      'Scan the QR code on the same label — sold items still verify when the QR is scanned.'
+    );
+  }
+  if (/^\d{8,14}$/.test(token)) {
+    return (
+      'That looks like a product barcode (GTIN), shared by every pack. ' +
+      'Scan the unique unit QR to verify this specific item.'
+    );
+  }
+  return 'This code is not registered. Treat the product as unverified.';
 }
