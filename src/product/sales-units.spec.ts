@@ -16,9 +16,15 @@ import { ProductService } from './services/product.service';
  * shape of the declaration, not anything about stock.
  */
 
+const DAIRY = { id: 1, code: 'DAIRY', name: 'Dairy', active: true };
+
+function withCategory<T extends Record<string, unknown>>(dto: T): T & { categoryId: number } {
+  return { categoryId: DAIRY.id, ...dto };
+}
+
 function service(existing?: Partial<Product>) {
   let stored: Record<string, unknown> | null = existing
-    ? ({ id: 1, sku: 'YOG-001', ...existing } as Record<string, unknown>)
+    ? ({ id: 1, sku: 'YOG-001', categoryId: DAIRY.id, ...existing } as Record<string, unknown>)
     : null;
 
   const products = {
@@ -35,29 +41,34 @@ function service(existing?: Partial<Product>) {
   return new ProductService(
     products as never,
     {} as never,
-    { findOne: () => Promise.resolve(null) } as never,
+    {
+      findOne: ({ where }: { where: { id: number } }) =>
+        Promise.resolve(where.id === DAIRY.id ? DAIRY : null),
+    } as never,
     { findOne: () => Promise.resolve(null) } as never,
   );
 }
 
 describe('declaring what a product is sold in', () => {
   it('accepts a base unit with one pack that wraps it', async () => {
-    const product = await service().create(1, {
-      name: 'Yogurt 500ml',
-      baseUnit: 'BOTTLE',
-      packUnit: 'CARTON',
-      unitsPerPack: 24,
-    });
+    const product = await service().create(
+      1,
+      withCategory({
+        name: 'Yogurt 500ml',
+        baseUnit: 'BOTTLE',
+        packUnit: 'CARTON',
+        unitsPerPack: 24,
+      }),
+    );
 
     expect(product.baseUnit).toBe('BOTTLE');
     expect(product.packUnit).toBe('CARTON');
     expect(product.unitsPerPack).toBe(24);
   });
 
-  it('accepts a product that declares nothing at all', async () => {
-    // Every one of the 128 products already in the catalogue is this case.
-    // Quantities show as bare numbers, exactly as they do today.
-    const product = await service().create(1, { name: 'Widget' });
+  it('accepts a product that declares nothing about units', async () => {
+    // Quantities show as bare numbers when no pack model is declared.
+    const product = await service().create(1, withCategory({ name: 'Widget' }));
 
     expect(product.baseUnit).toBeNull();
     expect(product.packUnit).toBeNull();
@@ -66,10 +77,13 @@ describe('declaring what a product is sold in', () => {
 
   it('accepts a base unit with no pack', async () => {
     // Bulk milk: sold by the litre and in nothing else.
-    const product = await service().create(1, {
-      name: 'Bulk milk',
-      baseUnit: 'LITRE',
-    });
+    const product = await service().create(
+      1,
+      withCategory({
+        name: 'Bulk milk',
+        baseUnit: 'LITRE',
+      }),
+    );
 
     expect(product.baseUnit).toBe('LITRE');
     expect(product.packUnit).toBeNull();
@@ -79,32 +93,38 @@ describe('declaring what a product is sold in', () => {
     // CARTON of how many? An unanswerable question stored is a conversion
     // waiting to be guessed at.
     await expect(
-      service().create(1, {
-        name: 'Yogurt',
-        baseUnit: 'BOTTLE',
-        packUnit: 'CARTON',
-      }),
+      service().create(
+        1,
+        withCategory({
+          name: 'Yogurt',
+          baseUnit: 'BOTTLE',
+          packUnit: 'CARTON',
+        }),
+      ),
     ).rejects.toBeInstanceOf(TraceabilityRuleException);
   });
 
   it('refuses a size with no pack', async () => {
     await expect(
-      service().create(1, {
-        name: 'Yogurt',
-        baseUnit: 'BOTTLE',
-        unitsPerPack: 24,
-      }),
+      service().create(
+        1,
+        withCategory({
+          name: 'Yogurt',
+          baseUnit: 'BOTTLE',
+          unitsPerPack: 24,
+        }),
+      ),
     ).rejects.toBeInstanceOf(TraceabilityRuleException);
   });
 
   it('names the missing half in the refusal', async () => {
     // The person filling in the form has to be told which field to complete.
     await expect(
-      service().create(1, { name: 'Yogurt', packUnit: 'CARTON' }),
+      service().create(1, withCategory({ name: 'Yogurt', packUnit: 'CARTON' })),
     ).rejects.toThrow(/CARTON needs a size/);
 
     await expect(
-      service().create(1, { name: 'Yogurt', unitsPerPack: 24 }),
+      service().create(1, withCategory({ name: 'Yogurt', unitsPerPack: 24 })),
     ).rejects.toThrow(/needs a pack to name/);
   });
 });

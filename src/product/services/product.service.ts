@@ -157,12 +157,20 @@ export class ProductService {
       }
     }
 
+    const categoryId = await this.resolveCategory(dto);
+    if (categoryId === null) {
+      throw new TraceabilityRuleException(
+        'Every product needs a category. Choose one from the catalogue ' +
+          '(GET /api/product-categories), or create one first.',
+      );
+    }
+
     const saved = await this.products.save(
       this.products.create({
         organizationId,
         name: dto.name.trim(),
         sku,
-        categoryId: await this.resolveCategory(dto),
+        categoryId,
         // The legacy string is no longer written. Existing rows keep theirs as
         // the record of what was originally typed (DR-05).
         category: null,

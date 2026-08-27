@@ -51,11 +51,13 @@ describe('product category assignment', () => {
     expect(product.categoryId).toBe(DAIRY.id);
   });
 
-  it('leaves the category empty when none is given', async () => {
-    // Most products genuinely have no category, and that is a real answer -
-    // inventing an "uncategorised" bucket would be a classification nobody made.
-    const product = await service().create(1, { name: 'Widget' });
-    expect(product.categoryId).toBeNull();
+  it('refuses a product with no category', async () => {
+    // Catalogue goods are always filed under a kind. Leaving it blank used to
+    // invent an "uncategorised" gap that opening stock and sales then had to
+    // paper over.
+    await expect(
+      service().create(1, { name: 'Widget' }),
+    ).rejects.toBeInstanceOf(TraceabilityRuleException);
   });
 
   it('refuses free text rather than ignoring it', async () => {

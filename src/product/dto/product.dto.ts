@@ -23,8 +23,8 @@ export class CreateProductDto {
   /**
    * The canonical category this product belongs to.
    *
-   * Replaces the free-text `category`. Nullable: most products have no category
-   * recorded, and that is a real answer rather than a gap to fill.
+   * Required on create — every product is filed under a catalogue category.
+   * Optional on update so a rename that omits it leaves the filing alone.
    */
   @IsOptional()
   @IsInt({ message: 'Choose a category from the catalogue' })

@@ -8,6 +8,7 @@ import { UserRole } from './auth/user-role.enum';
 import { Organization } from './organization/entities/organization.entity';
 import { OrganizationType } from './organization/organization-type.enum';
 import { Product } from './product/entities/product.entity';
+import { ProductCategory } from './product/entities/product-category.entity';
 import { Location } from './location/entities/location.entity';
 import { LocationType } from './location/location-type.enum';
 import { Batch } from './batch/entities/batch.entity';
@@ -126,12 +127,19 @@ async function seed() {
 
   // ─── Products ───
   console.log('\n--- Products ---');
-  const productDefs: { name: string; sku: string; category: string }[] = [
-    { name: 'Fresh Milk 1L', sku: 'DAI-MLK-001', category: 'DAIRY' },
-    { name: 'Yogurt 500ml', sku: 'DAI-YGR-001', category: 'DAIRY' },
-    { name: 'Butter 250g', sku: 'DAI-BTR-001', category: 'DAIRY' },
-    { name: 'Cheese Block 200g', sku: 'DAI-CHS-001', category: 'DAIRY' },
-    { name: 'Cream 200ml', sku: 'DAI-CRM-001', category: 'DAIRY' },
+  const dairyCategory = await ds.getRepository(ProductCategory).findOne({
+    where: { code: 'DAIRY' },
+  });
+  if (!dairyCategory) {
+    throw new Error('DAIRY category missing — run migrations before seeding.');
+  }
+
+  const productDefs: { name: string; sku: string }[] = [
+    { name: 'Fresh Milk 1L', sku: 'DAI-MLK-001' },
+    { name: 'Yogurt 500ml', sku: 'DAI-YGR-001' },
+    { name: 'Butter 250g', sku: 'DAI-BTR-001' },
+    { name: 'Cheese Block 200g', sku: 'DAI-CHS-001' },
+    { name: 'Cream 200ml', sku: 'DAI-CRM-001' },
   ];
 
   const products: Product[] = [];
@@ -140,13 +148,24 @@ async function seed() {
       const product = productRepo.create({
         name: def.name,
         sku: def.sku,
-        category: def.category,
+        categoryId: dairyCategory.id,
+        category: null,
       });
       await productRepo.save(product);
       console.log(`  Created product: ${def.name}`);
     }
     products.push((await productRepo.findOne({ where: { sku: def.sku } }))!);
   }
+
+  // Older seeds filed dairy SKUs as free-text only. Attach them to DAIRY so
+  // every catalogue row used in the demo has a real category.
+  await productRepo
+    .createQueryBuilder()
+    .update(Product)
+    .set({ categoryId: dairyCategory.id })
+    .where("sku LIKE :prefix", { prefix: 'DAI-%' })
+    .andWhere('category_id IS NULL')
+    .execute();
 
   // ─── Locations ───
   console.log('\n--- Locations ---');
