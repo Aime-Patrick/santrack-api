@@ -7,6 +7,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditService } from './audit.service';
+import { clientAddress } from './client-address';
 
 /**
  * Writes every mutating request to the audit log (technical proposal section
@@ -39,7 +40,7 @@ export class AuditInterceptor implements NestInterceptor {
             path,
             statusCode,
             detail,
-            remoteAddress: request.ip,
+            remoteAddress: clientAddress(request),
           });
         },
         error: (error: { status?: number; message?: string }) => {
@@ -53,7 +54,7 @@ export class AuditInterceptor implements NestInterceptor {
             path,
             statusCode,
             detail: error?.message ? String(error.message).slice(0, 1000) : null,
-            remoteAddress: request.ip,
+            remoteAddress: clientAddress(request),
           });
         },
       }),

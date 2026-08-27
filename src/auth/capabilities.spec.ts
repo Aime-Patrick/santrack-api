@@ -16,9 +16,9 @@ describe('role capabilities (proposal section 12)', () => {
     }
   });
 
-  it('lets only production and admin roles mint identities', () => {
+  it('lets only production and org-admin roles mint identities', () => {
     // A QR identity is created at the point of manufacture and nowhere else,
-    // so a warehouse or a shop must never be able to invent one.
+    // so a warehouse, a shop, or the platform operator must never invent one.
     const minters = Object.values(UserRole).filter((role) =>
       can(role, Capability.REGISTER_IDENTITY),
     );
@@ -27,9 +27,28 @@ describe('role capabilities (proposal section 12)', () => {
         UserRole.ORG_ADMIN,
         UserRole.PRODUCTION_MANAGER,
         UserRole.PRODUCTION_OFFICER,
-        UserRole.SYSTEM_ADMIN,
       ].sort(),
     );
+  });
+
+  it('gives the platform operator oversight without operational tools', () => {
+    // SAN TECH administers the registry and can open Trace for investigation.
+    // They do not run a factory floor, warehouse, or payroll.
+    expect(ROLE_CAPABILITIES[UserRole.SYSTEM_ADMIN].sort()).toEqual(
+      [
+        Capability.VIEW_OPERATIONS,
+        Capability.MANAGE_USERS,
+        Capability.OVERSEE_INDUSTRIES,
+        Capability.ADMINISTER_PLATFORM,
+      ].sort(),
+    );
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.REGISTER_IDENTITY)).toBe(false);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.MOVE_STOCK)).toBe(false);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.SELL)).toBe(false);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.RUN_PRODUCTION)).toBe(false);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.MANAGE_FINANCE)).toBe(false);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.VIEW_OPERATIONS)).toBe(true);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.ADMINISTER_PLATFORM)).toBe(true);
   });
 
   it('gives read-only roles no write capability at all', () => {
@@ -52,7 +71,7 @@ describe('role capabilities (proposal section 12)', () => {
     expect(can(UserRole.QUALITY_OFFICER, Capability.MANAGE_RECALL)).toBe(true);
   });
 
-  it('lets only production and admin roles run production', () => {
+  it('lets only production and org-admin roles run production', () => {
     const runners = Object.values(UserRole).filter((role) =>
       can(role, Capability.RUN_PRODUCTION),
     );
@@ -61,12 +80,11 @@ describe('role capabilities (proposal section 12)', () => {
         UserRole.ORG_ADMIN,
         UserRole.PRODUCTION_MANAGER,
         UserRole.PRODUCTION_OFFICER,
-        UserRole.SYSTEM_ADMIN,
       ].sort(),
     );
   });
 
-  it('lets only production, quality and admin roles record inspections', () => {
+  it('lets only production, quality and org-admin roles record inspections', () => {
     const inspectors = Object.values(UserRole).filter((role) =>
       can(role, Capability.PERFORM_QC),
     );
@@ -75,7 +93,6 @@ describe('role capabilities (proposal section 12)', () => {
         UserRole.ORG_ADMIN,
         UserRole.PRODUCTION_MANAGER,
         UserRole.QUALITY_OFFICER,
-        UserRole.SYSTEM_ADMIN,
       ].sort(),
     );
   });
@@ -85,45 +102,40 @@ describe('role capabilities (proposal section 12)', () => {
     expect(can(UserRole.SALES_OFFICER, Capability.RUN_PRODUCTION)).toBe(false);
   });
 
-  it('lets only logistics, warehouse and admin roles manage logistics', () => {
+  it('lets only logistics, warehouse and org-admin roles manage logistics', () => {
     const managers = Object.values(UserRole).filter((role) =>
       can(role, Capability.MANAGE_LOGISTICS),
     );
     expect(managers.sort()).toEqual(
       [
         UserRole.ORG_ADMIN,
-        UserRole.SYSTEM_ADMIN,
         UserRole.LOGISTICS_OFFICER,
         UserRole.WAREHOUSE_MANAGER,
       ].sort(),
     );
   });
 
-  it('lets only sales and admin roles manage clients', () => {
+  it('lets only sales and org-admin roles manage clients', () => {
     const managers = Object.values(UserRole).filter((role) =>
       can(role, Capability.MANAGE_CLIENTS),
     );
     expect(managers.sort()).toEqual(
-      [UserRole.ORG_ADMIN, UserRole.SYSTEM_ADMIN, UserRole.SALES_OFFICER].sort(),
+      [UserRole.ORG_ADMIN, UserRole.SALES_OFFICER].sort(),
     );
   });
 
-  it('lets only admin roles manage finance', () => {
+  it('lets only org-admin manage finance', () => {
     const managers = Object.values(UserRole).filter((role) =>
       can(role, Capability.MANAGE_FINANCE),
     );
-    expect(managers.sort()).toEqual(
-      [UserRole.ORG_ADMIN, UserRole.SYSTEM_ADMIN].sort(),
-    );
+    expect(managers.sort()).toEqual([UserRole.ORG_ADMIN].sort());
   });
 
-  it('lets only admin roles manage payroll', () => {
+  it('lets only org-admin manage payroll', () => {
     const managers = Object.values(UserRole).filter((role) =>
       can(role, Capability.MANAGE_PAYROLL),
     );
-    expect(managers.sort()).toEqual(
-      [UserRole.ORG_ADMIN, UserRole.SYSTEM_ADMIN].sort(),
-    );
+    expect(managers.sort()).toEqual([UserRole.ORG_ADMIN].sort());
   });
 
   it('does not let a sales officer post to the ledger', () => {

@@ -19,9 +19,11 @@ import { User } from '../../auth/entities/user.entity';
 import {
   ActingOrg,
   CurrentUser,
+  OptionalActingOrg,
   RequireCapability,
 } from '../../common/decorators';
-import { TraceabilityRuleException } from '../../common/errors';
+import { OrganizationRequiredException, TraceabilityRuleException, NotFoundEntityException } from '../../common/errors';
+import { UserRole } from '../../auth/user-role.enum';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
 import {
@@ -230,11 +232,17 @@ export class LicenseReviewController {
    * "expired licenses" and "unregistered products" half of the section 10
    * compliance panel. This is what advisory enforcement produces instead of a
    * refusal, so it is the regulator's route to the same information.
+   *
+   * Platform operators (SYSTEM_ADMIN) may also read it — they oversee the
+   * registry but do not decide licences.
    */
   @Get('findings')
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async findings(@ActingOrg() regulator: Organization) {
-    requireRegulatorStanding(regulator);
+  async findings(
+    @OptionalActingOrg() organization: Organization | null,
+    @CurrentUser() actor: User,
+  ) {
+    requireIndustryOverseer(organization, actor);
     const findings = await this.enforcement.recentFindings();
     return {
       enforcement: this.enforcement.enforcementMode(),
@@ -249,6 +257,60 @@ export class LicenseReviewController {
         detail: finding.detail,
         recordedAt: finding.recordedAt,
       })),
+    };
+  }
+
+  /** Full record for one finding — list rows truncate; this does not. */
+  @Get('findings/:id')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async findingOne(
+    @Param('id', ParseIntPipe) id: number,
+    @OptionalActingOrg() organization: Organization | null,
+    @CurrentUser() actor: User,
+  ) {
+    requireIndustryOverseer(organization, actor);
+    const finding = await this.enforcement.findingById(id);
+    if (!finding) {
+      throw new NotFoundEntityException('ComplianceFinding', id);
+    }
+
+    const org = finding.organization;
+    const license = finding.license;
+    const findingActor = finding.actor;
+
+    return {
+      id: finding.id,
+      type: finding.type,
+      activity: finding.activity,
+      action: finding.action,
+      detail: finding.detail,
+      recordedAt: finding.recordedAt,
+      organization: org
+        ? {
+            id: org.id,
+            name: org.name,
+            type: org.type,
+            tin: org.tin,
+            registrationNumber: org.registrationNumber,
+          }
+        : null,
+      license: license
+        ? {
+            id: license.id,
+            licenseNumber: license.licenseNumber,
+            status: license.status,
+            expiresOn: license.expiresOn,
+          }
+        : null,
+      actor: findingActor
+        ? {
+            id: findingActor.id,
+            email: findingActor.email,
+            fullName: findingActor.fullName,
+            role: findingActor.role,
+          }
+        : null,
+      enforcement: this.enforcement.enforcementMode(),
     };
   }
 
@@ -368,6 +430,23 @@ function describe(license: License) {
     statusChangedAt: license.statusChangedAt,
     previousLicenseId: license.previousLicense?.id ?? null,
   };
+}
+
+/**
+ * Regulatory standing for cross-organization compliance reads.
+ * Licensing authorities and the platform operator may call these.
+ */
+function requireIndustryOverseer(
+  organization: Organization | null,
+  actor: User,
+): void {
+  if (actor.role === UserRole.SYSTEM_ADMIN) {
+    return;
+  }
+  if (!organization) {
+    throw new OrganizationRequiredException();
+  }
+  requireRegulatorStanding(organization);
 }
 
 /**

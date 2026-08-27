@@ -67,8 +67,15 @@ function service(organization: Record<string, unknown> | null) {
     listFor: jest.fn().mockResolvedValue([]),
     issueProvisional: jest.fn().mockResolvedValue(null),
   };
-  const notifications = { create: jest.fn().mockResolvedValue({}) };
-  const config = { get: jest.fn().mockReturnValue(90) };
+  const notifications = { sendToUser: jest.fn().mockResolvedValue({}) };
+  const email = { sendWelcomeEmail: jest.fn().mockResolvedValue(undefined) };
+  const config = {
+    get: jest.fn((key: string) => {
+      if (key === 'licensing.provisionalDays') return 90;
+      if (key === 'appPublicUrl') return 'http://localhost:3000';
+      return undefined;
+    }),
+  };
 
   return {
     instance: new OrganizationService(
@@ -79,6 +86,7 @@ function service(organization: Record<string, unknown> | null) {
       sites as never,
       licenses as never,
       notifications as never,
+      email as never,
       config as never,
     ),
     organizations,
@@ -87,6 +95,7 @@ function service(organization: Record<string, unknown> | null) {
     sites,
     licenses,
     notifications,
+    email,
   };
 }
 
@@ -222,16 +231,17 @@ describe('creating an organization', () => {
   });
 
   it('sends a welcome notification pointing to compliance', async () => {
-    const { instance, notifications } = service(null);
+    const { instance, notifications, email } = service(null);
 
     await instance.create(actor(), dto);
 
-    expect(notifications.create).toHaveBeenCalledTimes(1);
-    const call = notifications.create.mock.calls[0][0];
-    expect(call.userId).toBe(5);
-    expect(call.title).toBe('Welcome to SanTrack');
-    expect(call.module).toBe('compliance');
-    expect(call.actionUrl).toBe('/compliance');
+    expect(notifications.sendToUser).toHaveBeenCalledTimes(1);
+    const [userId, payload] = notifications.sendToUser.mock.calls[0];
+    expect(userId).toBe(5);
+    expect(payload.title).toBe('Welcome to SanTrack');
+    expect(payload.module).toBe('compliance');
+    expect(payload.actionUrl).toBe('/dashboard/compliance');
+    expect(email.sendWelcomeEmail).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a second organization for someone who already acts for one', async () => {

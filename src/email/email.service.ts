@@ -133,4 +133,28 @@ export class EmailService implements OnModuleInit {
       },
     });
   }
+
+  async sendAdminPasswordResetEmail(input: {
+    to: string;
+    name: string;
+    organizationName: string | null;
+    temporaryPassword: string;
+    resetBy: string;
+    loginUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: input.to,
+      subject: 'Your SANTRACK password was reset',
+      template: 'password-reset-by-admin',
+      data: {
+        title: 'Password reset',
+        name: input.name,
+        email: input.to,
+        organizationName: input.organizationName,
+        temporaryPassword: input.temporaryPassword,
+        resetBy: input.resetBy,
+        loginUrl: input.loginUrl,
+      },
+    });
+  }
 }

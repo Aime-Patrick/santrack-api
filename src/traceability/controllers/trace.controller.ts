@@ -2,12 +2,15 @@ import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability, capabilitiesFor } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
+import { UserRole } from '../../auth/user-role.enum';
 import {
   ActingOrg,
   CurrentUser,
+  OptionalActingOrg,
   Public,
   RequireCapability,
 } from '../../common/decorators';
+import { OrganizationRequiredException } from '../../common/errors';
 import { view } from '../../item/controllers/item.controller';
 import { ItemKind } from '../../item/item.enums';
 import { ItemService } from '../../item/services/item.service';
@@ -85,15 +88,25 @@ export class TraceController {
   @Get(':qrCode')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async timeline(
-    @ActingOrg() organization: Organization,
+    @OptionalActingOrg() organization: Organization | null,
     @CurrentUser() actor: User,
     @Param('qrCode') qrCode: string,
   ) {
-    const item = await this.itemService.requireVisible(qrCode, organization);
+    const isPlatformOperator = actor.role === UserRole.SYSTEM_ADMIN;
+    if (!organization && !isPlatformOperator) {
+      throw new OrganizationRequiredException();
+    }
+
+    // Platform operators may open any identity for investigation. Business
+    // staff still need a stake in its history (or regulator standing).
+    const item = organization
+      ? await this.itemService.requireVisible(qrCode, organization)
+      : await this.itemService.require(qrCode);
 
     const maySeeConsumer =
-      organization.type === OrganizationType.REGULATOR ||
-      item.holder?.id === organization.id;
+      isPlatformOperator ||
+      organization?.type === OrganizationType.REGULATOR ||
+      item.holder?.id === organization?.id;
 
     const { entries } = await this.traceability.timeline(item, maySeeConsumer);
 
@@ -172,7 +185,7 @@ export class TraceController {
       actions: availableActions({
         item,
         organization,
-        capabilities: capabilitiesFor(actor.role, organization.type),
+        capabilities: capabilitiesFor(actor.role, organization?.type),
       }),
       batchDetail,
       manufacturerCompliance,

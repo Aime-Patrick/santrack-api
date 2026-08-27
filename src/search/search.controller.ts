@@ -1,7 +1,14 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability } from '../auth/capabilities';
-import { ActingOrg, RequireCapability } from '../common/decorators';
+import { User } from '../auth/entities/user.entity';
+import { UserRole } from '../auth/user-role.enum';
+import {
+  CurrentUser,
+  OptionalActingOrg,
+  RequireCapability,
+} from '../common/decorators';
+import { OrganizationRequiredException } from '../common/errors';
 import { Organization } from '../organization/entities/organization.entity';
 import { SearchService } from './search.service';
 
@@ -12,15 +19,22 @@ export class SearchController {
   constructor(private readonly search: SearchService) {}
 
   /**
-   * Org-scoped global search. Results are cached in Redis (~90s) so repeated
-   * keystrokes for the same query do not re-hit the database.
+   * Global search. Business staff search within their organization.
+   * The platform operator searches industries and users across the platform.
    */
   @Get()
   @RequireCapability(Capability.VIEW_OPERATIONS)
   searchGlobal(
-    @ActingOrg() organization: Organization,
+    @OptionalActingOrg() organization: Organization | null,
+    @CurrentUser() actor: User,
     @Query('q') q = '',
   ) {
+    if (actor.role === UserRole.SYSTEM_ADMIN && !organization) {
+      return this.search.searchPlatform(q ?? '');
+    }
+    if (!organization) {
+      throw new OrganizationRequiredException();
+    }
     return this.search.search(organization.id, q ?? '');
   }
 }

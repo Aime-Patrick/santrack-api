@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { FixedWindowLimiter } from './rate-limit';
+import { clientAddress } from './client-address';
 
 export const RATE_LIMIT_KEY = 'santrack:rateLimit';
 
@@ -72,7 +73,9 @@ export class RateLimitGuard implements CanActivate {
     }
 
     const request = context.switchToHttp().getRequest();
-    if (limiter.hit(clientAddress(request)) === -1) {
+    // Prefer X-Forwarded-For when a trusted proxy sits in front; see
+    // TRUST_PROXY_HOPS in main.ts and client-address.ts.
+    if (limiter.hit(clientAddress(request) ?? 'unknown') === -1) {
       throw new HttpException(
         {
           statusCode: HttpStatus.TOO_MANY_REQUESTS,
@@ -109,23 +112,4 @@ export class RateLimitGuard implements CanActivate {
     this.limiters.set(declared.policy, limiter);
     return limiter;
   }
-}
-
-/**
- * The address to count against. `request.ip` is correct only when Express is
- * told how many proxies sit in front of it (see TRUST_PROXY_HOPS in main.ts);
- * without that it reports the proxy on every call and the limit becomes
- * global. The fallback keeps the guard working rather than letting an
- * unknown address bypass it entirely.
- *
- * Addresses are a blunt instrument for a consumer-facing endpoint: behind
- * carrier-grade NAT thousands of shoppers share one, which is why the public
- * verification ceiling is set high rather than tight. Anything stricter than
- * this needs a signal better than an IP.
- */
-function clientAddress(request: {
-  ip?: string;
-  socket?: { remoteAddress?: string };
-}): string {
-  return request.ip ?? request.socket?.remoteAddress ?? 'unknown';
 }

@@ -1,15 +1,24 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, Repository } from 'typeorm';
+import { User } from '../auth/entities/user.entity';
 import { Batch } from '../batch/entities/batch.entity';
 import { Customer } from '../commerce/entities/customer.entity';
 import { TraceableItem } from '../item/entities/traceable-item.entity';
+import { Organization } from '../organization/entities/organization.entity';
 import { Product } from '../product/entities/product.entity';
 import { ProductCategory } from '../product/entities/product-category.entity';
 import { RedisCacheService } from '../cache/redis-cache.service';
 
 export type SearchHit = {
-  type: 'product' | 'category' | 'batch' | 'customer' | 'item';
+  type:
+    | 'product'
+    | 'category'
+    | 'batch'
+    | 'customer'
+    | 'item'
+    | 'organization'
+    | 'user';
   id: number;
   title: string;
   subtitle: string | null;
@@ -39,6 +48,10 @@ export class SearchService {
     private readonly customers: Repository<Customer>,
     @InjectRepository(TraceableItem)
     private readonly items: Repository<TraceableItem>,
+    @InjectRepository(Organization)
+    private readonly organizations: Repository<Organization>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
   ) {}
 
   async search(organizationId: number, rawQuery: string): Promise<SearchResponse> {
@@ -150,6 +163,69 @@ export class SearchService {
           href: `/dashboard/manufacturing/trace?code=${encodeURIComponent(i.code)}`,
         };
       }),
+    ];
+
+    const payload: SearchResponse = { query, cached: false, results };
+    await this.cache.setJson(cacheKey, payload, CACHE_TTL_SECONDS);
+    return payload;
+  }
+
+  /**
+   * Platform operator search — industries and accounts, not factory stock.
+   */
+  async searchPlatform(rawQuery: string): Promise<SearchResponse> {
+    const query = rawQuery.trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (query.length < 2) {
+      return { query, cached: false, results: [] };
+    }
+
+    const cacheKey = `search:v1:platform:${query.toLowerCase()}`;
+    const hit = await this.cache.getJson<SearchResponse>(cacheKey);
+    if (hit) {
+      return { ...hit, cached: true };
+    }
+
+    const pattern = `%${query}%`;
+    const [organizations, users] = await Promise.all([
+      this.organizations.find({
+        where: [
+          { name: ILike(pattern) },
+          { tin: ILike(pattern) },
+          { registrationNumber: ILike(pattern) },
+        ],
+        take: LIMIT_PER_TYPE,
+        order: { name: 'ASC' },
+      }),
+      this.users.find({
+        where: [{ email: ILike(pattern) }, { fullName: ILike(pattern) }],
+        take: LIMIT_PER_TYPE,
+        order: { email: 'ASC' },
+        relations: { organization: true },
+      }),
+    ]);
+
+    const results: SearchHit[] = [
+      ...organizations.map(
+        (o): SearchHit => ({
+          type: 'organization',
+          id: o.id,
+          title: o.name,
+          subtitle: o.type,
+          href:
+            o.type === 'REGULATOR'
+              ? `/dashboard/regulators`
+              : `/dashboard/industries`,
+        }),
+      ),
+      ...users.map(
+        (u): SearchHit => ({
+          type: 'user',
+          id: u.id,
+          title: u.fullName ?? u.email,
+          subtitle: u.organization?.name ?? u.email,
+          href: `/dashboard/users`,
+        }),
+      ),
     ];
 
     const payload: SearchResponse = { query, cached: false, results };

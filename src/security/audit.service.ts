@@ -56,4 +56,8 @@ export class AuditService {
       take: capped,
     });
   }
+
+  async findById(id: number): Promise<AuditLog | null> {
+    return this.logs.findOne({ where: { id } });
+  }
 }

@@ -27,6 +27,16 @@ export const CAPABILITY_KEY = 'santrack:capability';
 export const RequireCapability = (capability: Capability) =>
   SetMetadata(CAPABILITY_KEY, capability);
 
+export const CAPABILITY_ANY_KEY = 'santrack:capabilityAny';
+
+/**
+ * At least one of these. Use when the same write is legitimate for different
+ * jobs — e.g. opening a site is catalogue work for a plant manager and org
+ * administration for a shop that never holds MANAGE_CATALOG.
+ */
+export const RequireAnyCapability = (...capabilities: Capability[]) =>
+  SetMetadata(CAPABILITY_ANY_KEY, capabilities);
+
 /** The authenticated user, already loaded with their organization. */
 export const CurrentUser = createParamDecorator(
   (_data: unknown, context: ExecutionContext): User => {
@@ -47,5 +57,17 @@ export const ActingOrg = createParamDecorator(
       throw new OrganizationRequiredException();
     }
     return user.organization;
+  },
+);
+
+/**
+ * Like {@link ActingOrg}, but returns null when the caller has no organization
+ * (platform operator). Routes that accept both business staff and SYSTEM_ADMIN
+ * use this and decide visibility from the caller's role.
+ */
+export const OptionalActingOrg = createParamDecorator(
+  (_data: unknown, context: ExecutionContext): Organization | null => {
+    const user = context.switchToHttp().getRequest().user as User | undefined;
+    return user?.organization ?? null;
   },
 );

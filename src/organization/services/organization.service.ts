@@ -9,8 +9,9 @@ import {
   TraceabilityRuleException,
 } from '../../common/errors';
 import { LicenseService } from '../../licensing/services/license.service';
-import { NotificationsService } from '../../notifications/services/notifications.service';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { NotificationType } from '../../notifications/entities/notification.entity';
+import { EmailService } from '../../email/email.service';
 import { Product } from '../../product/entities/product.entity';
 import { CreateOrganizationDto } from '../dto/organization.dto';
 import {
@@ -48,13 +49,20 @@ export class OrganizationService {
     private readonly facilities: Repository<Facility>,
     private readonly sites: FacilityService,
     private readonly licenses: LicenseService,
-    private readonly notifications: NotificationsService,
+    private readonly notifications: NotificationsGateway,
+    private readonly email: EmailService,
     config: ConfigService,
   ) {
     this.provisionalDays = config.get<number>('licensing.provisionalDays') ?? 90;
+    this.appPublicUrl = (
+      config.get<string>('appPublicUrl') ??
+      (config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'])[0] ??
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
   }
 
   private readonly provisionalDays: number;
+  private readonly appPublicUrl: string;
 
   /**
    * Onboarding: the caller creates the business they act for and is attached
@@ -131,16 +139,23 @@ export class OrganizationService {
      */
     await this.licenses.issueProvisional(organization, this.provisionalDays);
 
-    await this.notifications.create({
-      userId: actor.id,
+    await this.notifications.sendToUser(actor.id, {
       type: NotificationType.INFO,
       title: 'Welcome to SanTrack',
       message:
         `${organization.name} is set up. Check your compliance status to see ` +
         'your provisional licence and facility details.',
       module: 'compliance',
-      actionUrl: '/compliance',
+      actionUrl: '/dashboard/compliance',
     });
+
+    void this.email
+      .sendWelcomeEmail(
+        actor.email,
+        actor.fullName ?? actor.email,
+        this.appPublicUrl,
+      )
+      .catch(() => undefined);
 
     return organization;
   }

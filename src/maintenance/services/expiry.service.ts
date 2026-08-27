@@ -10,7 +10,7 @@ import { TraceableItem, today } from '../../item/entities/traceable-item.entity'
 import { ItemStatus } from '../../item/item.enums';
 import { LicenseService } from '../../licensing/services/license.service';
 import { NotificationType } from '../../notifications/entities/notification.entity';
-import { NotificationsService } from '../../notifications/services/notifications.service';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
 
@@ -46,7 +46,7 @@ export class ExpiryService {
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly recorder: EventRecorder,
-    private readonly notifications: NotificationsService,
+    private readonly notifications: NotificationsGateway,
     private readonly licenses: LicenseService,
     config: ConfigService,
   ) {
@@ -166,8 +166,7 @@ export class ExpiryService {
       });
 
       for (const recipient of recipients) {
-        await this.notifications.create({
-          userId: recipient.id,
+        await this.notifications.sendToUser(recipient.id, {
           type: NotificationType.WARNING,
           title: 'Stock approaching expiry',
           message:
@@ -175,9 +174,7 @@ export class ExpiryService {
             `the earliest on ${formatDate(row.soonest)}. Move them first (FEFO) ` +
             'or plan for write-off.',
           module: 'inventory',
-          actionUrl: '/inventory',
-          // Superseded by tomorrow's notice, so it should not pile up.
-          ttlDays: 2,
+          actionUrl: '/dashboard/inventory',
         });
         notified += 1;
       }

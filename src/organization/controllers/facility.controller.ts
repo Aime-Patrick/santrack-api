@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability } from '../../auth/capabilities';
-import { ActingOrg, RequireCapability } from '../../common/decorators';
+import { ActingOrg, RequireAnyCapability, RequireCapability } from '../../common/decorators';
 import { CreateFacilityDto, UpdateFacilityDto } from '../dto/facility.dto';
 import { Facility } from '../entities/facility.entity';
 import { Organization } from '../entities/organization.entity';
@@ -19,9 +19,10 @@ import { FacilityService } from '../services/facility.service';
  * The sites an organization operates (DR-02, DR-07 WU-1).
  *
  * Reading is an operations question — anyone who can see production can see
- * which plants exist. Opening or closing one is a catalogue decision about the
- * shape of the business, so it sits with `MANAGE_CATALOG` alongside products
- * and locations.
+ * which plants exist. Opening or closing one is usually a catalogue decision
+ * (`MANAGE_CATALOG`). Trading businesses that never hold that capability
+ * (retailers, shops, warehouses) still need to name and address their sites,
+ * so `MANAGE_USERS` — the org-admin write — also authorizes the change.
  */
 @ApiTags('Facilities')
 @ApiBearerAuth()
@@ -37,7 +38,7 @@ export class FacilityController {
   }
 
   @Post()
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireAnyCapability(Capability.MANAGE_CATALOG, Capability.MANAGE_USERS)
   async create(
     @ActingOrg() org: Organization,
     @Body() dto: CreateFacilityDto,
@@ -46,7 +47,7 @@ export class FacilityController {
   }
 
   @Patch(':id')
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireAnyCapability(Capability.MANAGE_CATALOG, Capability.MANAGE_USERS)
   async update(
     @ActingOrg() org: Organization,
     @Param('id', ParseIntPipe) id: number,

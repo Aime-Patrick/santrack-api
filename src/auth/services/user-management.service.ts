@@ -203,16 +203,38 @@ export class UserManagementService {
     userId: number,
     dto: ResetPasswordDto,
   ): Promise<void> {
-    const user = await this.users.findOne({ where: { id: userId } });
+    const user = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
     if (!user) {
       throw new NotFoundEntityException('User', userId);
     }
 
     this.requireVisible(actor, user);
 
-    user.passwordHash = await hash(dto.password, 10);
+    const temporaryPassword = dto.password.trim();
+    if (temporaryPassword.length < 8) {
+      throw new TraceabilityRuleException(
+        'Password must be at least 8 characters',
+      );
+    }
+
+    user.passwordHash = await hash(temporaryPassword, 10);
     user.mustChangePassword = true;
     await this.users.save(user);
+
+    const appUrl = this.appPublicUrl();
+    void this.email
+      .sendAdminPasswordResetEmail({
+        to: user.email,
+        name: user.fullName ?? user.email,
+        organizationName: user.organization?.name ?? null,
+        temporaryPassword,
+        resetBy: actor.fullName ?? actor.email,
+        loginUrl: `${appUrl}/login`,
+      })
+      .catch(() => undefined);
   }
 
   async remove(actor: User, userId: number): Promise<void> {

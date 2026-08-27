@@ -10,7 +10,7 @@ import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Request } from 'express';
 import { Repository } from 'typeorm';
-import { CAPABILITY_KEY, PUBLIC_KEY } from '../../common/decorators';
+import { CAPABILITY_ANY_KEY, CAPABILITY_KEY, PUBLIC_KEY } from '../../common/decorators';
 import { Capability, userCan } from '../capabilities';
 import { User } from '../entities/user.entity';
 
@@ -72,6 +72,19 @@ export class JwtAuthGuard implements CanActivate {
     // Authenticated but not permitted is 403, not 401 - re-authenticating
     // would not help, and telling the caller to try again would be a lie.
     if (required && !userCan(user, required)) {
+      throw new ForbiddenException(
+        `Your role (${user.role}) cannot perform this operation`,
+      );
+    }
+
+    const requiredAny = this.reflector.getAllAndOverride<Capability[]>(
+      CAPABILITY_ANY_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (
+      requiredAny?.length &&
+      !requiredAny.some((capability) => userCan(user, capability))
+    ) {
       throw new ForbiddenException(
         `Your role (${user.role}) cannot perform this operation`,
       );

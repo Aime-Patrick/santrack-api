@@ -58,7 +58,8 @@ export interface AvailableAction {
 
 interface Context {
   item: TraceableItem;
-  organization: Organization;
+  /** Null for the platform operator, who investigates without holding custody. */
+  organization: Organization | null;
   capabilities: Capability[];
 }
 
@@ -77,7 +78,7 @@ export function availableActions(context: Context): AvailableAction[] {
   const { item, organization, capabilities } = context;
 
   const holds = (capability: Capability) => capabilities.includes(capability);
-  const inCustody = item.holder?.id === organization.id;
+  const inCustody = organization != null && item.holder?.id === organization.id;
   const isPackage = item.kind === ItemKind.PACKAGE;
   const terminal = isTerminal(item.status);
 

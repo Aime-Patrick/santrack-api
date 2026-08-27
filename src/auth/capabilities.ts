@@ -94,9 +94,19 @@ const ALL_WITHIN_ORGANIZATION = ALL.filter(
  * The proposal's section 12 responsibilities, translated into capabilities.
  * Read-only roles (MANAGEMENT, AUDITOR) deliberately receive no write
  * capability at all - an auditor who can move stock is not an auditor.
+ *
+ * SYSTEM_ADMIN is the platform operator (SAN TECH), not a factory floor role:
+ * they oversee the registry and can open Trace for investigation, but they do
+ * not mint identities, move stock, sell, or run payroll. Trace actions are
+ * gated per capability, so VIEW_OPERATIONS alone yields timeline without Act.
  */
 export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
-  [UserRole.SYSTEM_ADMIN]: ALL,
+  [UserRole.SYSTEM_ADMIN]: [
+    Capability.VIEW_OPERATIONS,
+    Capability.MANAGE_USERS,
+    Capability.OVERSEE_INDUSTRIES,
+    Capability.ADMINISTER_PLATFORM,
+  ],
   // The most senior role a customer can hold, and still not a platform
   // operator - an organization administrator must not be able to award their
   // own company regulatory standing.
@@ -186,8 +196,9 @@ export const CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE: Partial<
  *
  * Listed types are intersected with what the role grants; unlisted types are
  * bounded by role alone, which is right for an ordinary trading business.
- * SYSTEM_ADMIN is exempt: the platform operator is not a business, and their
- * account may sit in any organization.
+ * SYSTEM_ADMIN is exempt from the ceiling: the platform operator is not a
+ * business, and their account may sit in any organization without picking up
+ * that organization's operational tools.
  */
 export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
   Record<OrganizationType, Capability[]>
@@ -292,8 +303,6 @@ export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
  * alone does not carry.
  */
 export function can(role: UserRole, capability: Capability): boolean {
-  // SYSTEM_ADMIN holds every capability including MANAGE_USERS.
-  if (role === UserRole.SYSTEM_ADMIN) return true;
   return ROLE_CAPABILITIES[role]?.includes(capability) ?? false;
 }
 
@@ -309,9 +318,7 @@ export function capabilitiesFor(
   role: UserRole,
   organizationType?: OrganizationType | null,
 ): Capability[] {
-  const held = new Set(
-    role === UserRole.SYSTEM_ADMIN ? ALL : (ROLE_CAPABILITIES[role] ?? []),
-  );
+  const held = new Set(ROLE_CAPABILITIES[role] ?? []);
 
   if (organizationType) {
     const conferred =
@@ -322,7 +329,8 @@ export function capabilitiesFor(
   }
 
   // The ceiling is a limit, not a grant: it can only remove. SYSTEM_ADMIN is
-  // exempt, having been given ALL above.
+  // exempt — they are not a business, and their account may sit in any org
+  // without inheriting that org's operational ceiling.
   const ceiling =
     role === UserRole.SYSTEM_ADMIN || !organizationType
       ? null

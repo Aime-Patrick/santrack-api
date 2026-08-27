@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 
@@ -72,6 +73,7 @@ export class LicenseService {
     private readonly storage: StorageProvider,
     private readonly notifications: NotificationsGateway,
     private readonly email: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   // ------------------------------------------------------------ applicant
@@ -970,7 +972,7 @@ export class LicenseService {
           subject: info.title,
           template: 'license-decision',
           data: {
-            recipientName: user.fullName,
+            recipientName: user.fullName ?? user.email,
             organisationName: orgName,
             licenceNumber: licenceNum,
             categoryName,
@@ -978,6 +980,7 @@ export class LicenseService {
             reason: reason ?? license.statusReason ?? undefined,
             expiresOn: license.expiresOn ?? undefined,
             reviewedBy: license.reviewedBy?.fullName ?? 'The licensing authority',
+            dashboardUrl: `${this.appPublicUrl()}/dashboard/licenses`,
           },
         }).catch((err) => {
           this.logger.warn(`Email to ${user.email} failed: ${err.message}`);
@@ -987,6 +990,13 @@ export class LicenseService {
 
     await Promise.allSettled(notificationPromises);
     this.logger.log(`Notified ${users.length} user(s) at ${orgName} about ${licenceNum} (${action})`);
+  }
+
+  private appPublicUrl(): string {
+    const configured = this.config.get<string>('appPublicUrl');
+    if (configured) return configured.replace(/\/$/, '');
+    const origins = this.config.get<string[]>('corsOrigins') ?? [];
+    return (origins[0] ?? 'http://localhost:3000').replace(/\/$/, '');
   }
 }
 

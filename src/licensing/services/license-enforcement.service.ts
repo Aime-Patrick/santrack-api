@@ -7,7 +7,7 @@ import { User } from '../../auth/entities/user.entity';
 import { UserRole } from '../../auth/user-role.enum';
 import { TraceabilityRuleException } from '../../common/errors';
 import { NotificationType } from '../../notifications/entities/notification.entity';
-import { NotificationsService } from '../../notifications/services/notifications.service';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
 import { ComplianceFinding } from '../entities/compliance-finding.entity';
@@ -59,7 +59,7 @@ export class LicenseEnforcementService {
     private readonly findings: Repository<ComplianceFinding>,
     @InjectRepository(User)
     private readonly users: Repository<User>,
-    private readonly notifications: NotificationsService,
+    private readonly notifications: NotificationsGateway,
     config: ConfigService,
   ) {
     this.mode = toMode(config.get<string>('licensing.enforcement'));
@@ -182,6 +182,14 @@ export class LicenseEnforcementService {
     });
   }
 
+  /** One finding in full — for the detail screen. */
+  async findingById(id: number): Promise<ComplianceFinding | null> {
+    return this.findings.findOne({
+      where: { id },
+      relations: { license: true, actor: true, organization: true },
+    });
+  }
+
   /** Which mode is in force, for the dashboard to report honestly. */
   enforcementMode(): EnforcementMode {
     return this.mode;
@@ -292,13 +300,12 @@ export class LicenseEnforcementService {
       });
 
       for (const admin of admins) {
-        await this.notifications.create({
-          userId: admin.id,
+        await this.notifications.sendToUser(admin.id, {
           type: NotificationType.WARNING,
           title: 'Licence attention needed',
           message: message ?? this.refusal(organization, action, assessment),
           module: 'licensing',
-          actionUrl: '/licenses',
+          actionUrl: '/dashboard/licenses',
         });
       }
     } catch (error) {
