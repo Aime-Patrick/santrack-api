@@ -117,7 +117,15 @@ export class TransferController {
       parseInt(page, 10) || 0,
       Math.min(parseInt(size, 10) || 20, 100),
     );
-    return { ...result, content: result.content.map((t) => describe(t, [])) };
+    const counts = await this.transfers.lineCounts(
+      result.content.map((transfer) => transfer.id),
+    );
+    return {
+      ...result,
+      content: result.content.map((transfer) =>
+        describe(transfer, [], [], counts.get(transfer.id) ?? 0),
+      ),
+    };
   }
 
   @Get('incoming')
@@ -134,7 +142,15 @@ export class TransferController {
       parseInt(page, 10) || 0,
       Math.min(parseInt(size, 10) || 20, 100),
     );
-    return { ...result, content: result.content.map((t) => describe(t, [])) };
+    const counts = await this.transfers.lineCounts(
+      result.content.map((transfer) => transfer.id),
+    );
+    return {
+      ...result,
+      content: result.content.map((transfer) =>
+        describe(transfer, [], [], counts.get(transfer.id) ?? 0),
+      ),
+    };
   }
 
   @Get(':id')
@@ -152,6 +168,7 @@ function describe(
   transfer: Transfer,
   lines: TransferLine[],
   missing: string[] = [],
+  lineCount = lines.length,
 ) {
   return {
     id: transfer.id,
@@ -166,7 +183,7 @@ function describe(
     dispatchedAt: transfer.dispatchedAt,
     receivedAt: transfer.receivedAt,
     notes: transfer.notes,
-    lineCount: lines.length,
+    lineCount,
     lines: lines.map((line) => ({
       id: line.id,
       itemId: line.item.id,

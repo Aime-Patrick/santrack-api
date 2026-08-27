@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
@@ -9,6 +10,7 @@ import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { EmailService } from '../../email/email.service';
 import { TraceableItem } from '../../item/entities/traceable-item.entity';
 import { ItemStatus } from '../../item/item.enums';
 import {
@@ -18,6 +20,7 @@ import {
   requireOwnedLocation,
 } from '../../item/services/item.service';
 import { Location } from '../../location/entities/location.entity';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { Organization } from '../../organization/entities/organization.entity';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
@@ -31,14 +34,21 @@ import { Transfer, TransferLine, TransferStatus } from '../entities/transfer.ent
  */
 @Injectable()
 export class TransferService {
+  private readonly logger = new Logger(TransferService.name);
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(Transfer)
     private readonly transfers: Repository<Transfer>,
     @InjectRepository(TransferLine)
     private readonly lines: Repository<TransferLine>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
     private readonly itemService: ItemService,
     private readonly recorder: EventRecorder,
+    private readonly notifications: NotificationsGateway,
+    private readonly email: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
   /**
@@ -53,7 +63,7 @@ export class TransferService {
   ): Promise<Transfer> {
     await this.recorder.rejectReplay(dto.meta);
 
-    return this.dataSource.transaction(async (manager) => {
+    const transfer = await this.dataSource.transaction(async (manager) => {
       const destination = await manager.findOne(Organization, {
         where: { id: dto.destinationOrganizationId },
       });
@@ -156,6 +166,21 @@ export class TransferService {
 
       return transfer;
     });
+
+    const lineCount = await this.lines.count({
+      where: { transfer: { id: transfer.id } },
+    });
+    void this.notifyOrganization(transfer.destinationOrganization.id, {
+      title: `Incoming transfer ${transfer.reference}`,
+      message: `${transfer.sourceOrganization.name} dispatched ${lineCount} item(s) to ${transfer.destinationOrganization.name}. Confirm receipt under Incoming transfers.`,
+      notifType: 'INFO',
+      action: 'dispatched',
+      transfer,
+      lineCount,
+      counterpartName: transfer.sourceOrganization.name,
+    });
+
+    return transfer;
   }
 
   /**
@@ -170,7 +195,7 @@ export class TransferService {
   ): Promise<{ transfer: Transfer; lines: TransferLine[]; missing: string[] }> {
     await this.recorder.rejectReplay(dto?.meta);
 
-    return this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       const transfer = await manager.findOne(Transfer, { where: { id: transferId } });
       if (!transfer) {
         throw new NotFoundEntityException('Transfer', transferId);
@@ -256,6 +281,26 @@ export class TransferService {
 
       return { transfer, lines, missing };
     });
+
+    const { transfer, lines, missing } = result;
+    const receivedCount = lines.length - missing.length;
+    void this.notifyOrganization(transfer.sourceOrganization.id, {
+      title:
+        missing.length > 0
+          ? `Partial receipt ${transfer.reference}`
+          : `Transfer received ${transfer.reference}`,
+      message:
+        missing.length > 0
+          ? `${transfer.destinationOrganization.name} received ${receivedCount} of ${lines.length} item(s). ${missing.length} still outstanding.`
+          : `${transfer.destinationOrganization.name} confirmed receipt of ${receivedCount} item(s) on ${transfer.reference}.`,
+      notifType: missing.length > 0 ? 'WARNING' : 'SUCCESS',
+      action: missing.length > 0 ? 'partially_received' : 'received',
+      transfer,
+      lineCount: receivedCount,
+      counterpartName: transfer.destinationOrganization.name,
+    });
+
+    return result;
   }
 
   /**
@@ -386,6 +431,26 @@ export class TransferService {
     return this.lines.find({ where: { transfer: { id: transferId } } });
   }
 
+  /** How many lines each transfer carries — for list screens that skip loading every line. */
+  async lineCounts(transferIds: number[]): Promise<Map<number, number>> {
+    const counts = new Map<number, number>();
+    if (transferIds.length === 0) return counts;
+
+    const rows = await this.lines
+      .createQueryBuilder('line')
+      .innerJoin('line.transfer', 'transfer')
+      .select('transfer.id', 'transferId')
+      .addSelect('COUNT(line.id)', 'cnt')
+      .where('transfer.id IN (:...ids)', { ids: transferIds })
+      .groupBy('transfer.id')
+      .getRawMany<{ transferId: string | number; cnt: string }>();
+
+    for (const row of rows) {
+      counts.set(Number(row.transferId), Number(row.cnt));
+    }
+    return counts;
+  }
+
   async listOutgoing(organization: Organization, page: number, size: number) {
     const [content, total] = await this.transfers.findAndCount({
       where: { sourceOrganization: { id: organization.id } },
@@ -434,6 +499,76 @@ export class TransferService {
       throw new NotFoundEntityException('Transfer', transferId);
     }
     return transfer;
+  }
+
+  /**
+   * Alerts every account in an organization about a transfer event. Email
+   * failures are logged and ignored so a mail outage cannot undo the stock
+   * movement that already committed.
+   */
+  private async notifyOrganization(
+    organizationId: number,
+    payload: {
+      title: string;
+      message: string;
+      notifType: string;
+      action: string;
+      transfer: Transfer;
+      lineCount: number;
+      counterpartName: string;
+    },
+  ): Promise<void> {
+    const recipients = await this.users.find({
+      where: { organization: { id: organizationId } },
+    });
+    if (recipients.length === 0) return;
+
+    const dashboardUrl = `${this.appPublicUrl()}/dashboard/manufacturing/stock-transfer`;
+    const results = await Promise.allSettled(
+      recipients.map(async (user) => {
+        await this.notifications.sendToUser(user.id, {
+          type: payload.notifType,
+          title: payload.title,
+          message: payload.message,
+          module: 'transfers',
+          actionUrl: '/dashboard/manufacturing/stock-transfer',
+        });
+
+        if (!user.email) return;
+
+        await this.email
+          .send({
+            to: user.email,
+            subject: payload.title,
+            template: 'transfer-event',
+            data: {
+              recipientName: user.fullName ?? user.email,
+              title: payload.title,
+              message: payload.message,
+              reference: payload.transfer.reference,
+              counterpartName: payload.counterpartName,
+              itemCount: payload.lineCount,
+              action: payload.action,
+              dashboardUrl,
+            },
+          })
+          .catch((err: Error) => {
+            this.logger.warn(`Email to ${user.email} failed: ${err.message}`);
+          });
+      }),
+    );
+
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    this.logger.log(
+      `Notified ${recipients.length - failed}/${recipients.length} user(s) about ${payload.transfer.reference} (${payload.action})`,
+    );
+  }
+
+  private appPublicUrl(): string {
+    const configured = this.config.get<string>('appPublicUrl');
+    if (configured) return configured.replace(/\/$/, '');
+    const origins = this.config.get<string[]>('corsOrigins') ?? [];
+    return (origins[0] ?? 'http://localhost:3000').replace(/\/$/, '');
   }
 }
 
