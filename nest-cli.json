@@ -4,19 +4,13 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "deleteOutDir": true,
+    "tsConfigPath": "tsconfig.build.json",
     "assets": [
       {
         "include": "email/templates/**/*",
         "watchAssets": true
       }
     ],
-    "plugins": [
-      {
-        "name": "@nestjs/swagger/plugin",
-        "options": {
-          "introspectComments": true
-        }
-      }
-    ]
+    "plugins": []
   }
 }

@@ -43,11 +43,12 @@ In **Settings → Build & Deploy** set:
 
 | Field | Value |
 | --- | --- |
-| Build Command | `NODE_OPTIONS=--max-old-space-size=460 pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=460 pnpm run build` |
+| Build Command | `pnpm install --frozen-lockfile && pnpm run build:render` |
 | Start Command | `pnpm run start:render` |
 
-Do **not** use `pnpm start` / `nest start` on Render — that recompiles TypeScript
-and hits JavaScript heap OOM on the free plan.
+Do **not** use `pnpm start` / `nest start` / `nest build` on the free plan —
+`nest build` (especially with the Swagger compiler plugin) exceeds the ~512MB
+heap. `build:render` uses plain `tsc` plus a small asset copy instead.
 
 Free-tier notes: the web service spins down when idle (cold starts); Postgres and
 Key Value free instances expire if unused for a stretch — fine for demos, not for

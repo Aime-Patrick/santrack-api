@@ -5,6 +5,7 @@
   "description": "SANTRACK central API - product traceability, inventory and lifecycle",
   "scripts": {
     "build": "nest build",
+    "build:render": "node --max-old-space-size=450 ./node_modules/typescript/bin/tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",

@@ -27,8 +27,8 @@ services:
     runtime: node
     plan: free
     region: oregon
-    # Cap the Node heap under the ~512MB free instance so nest build can finish.
-    buildCommand: NODE_OPTIONS=--max-old-space-size=460 pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=460 pnpm run build
+    # Plain tsc uses far less RAM than nest build + Swagger plugin on free tier.
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build:render
     # Never use nest start here — it recompiles TS and OOMs on free tier.
     startCommand: pnpm run start:render
     healthCheckPath: /api/health
