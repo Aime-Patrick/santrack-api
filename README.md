@@ -32,10 +32,22 @@ Redis/BullMQ, Socket.IO and scheduled jobs need a long-running Node process.
 3. When prompted, set:
    - `CORS_ORIGINS` — your frontend origin(s), e.g. `https://your-app.vercel.app`
    - `APP_PUBLIC_URL` — same origin (used in invite / reset email links)
-4. Deploy. Start runs migrations then `node dist/main.js`.
-5. Health check: `GET /api/health` → `{ "status": "ok" }`.
-6. Point the frontend API base URL at your Render service URL
+4. Deploy. **Start command** runs migrations, then the API. On the free plan there is
+   no pre-deploy hook — do not put `migration:run` there.
+5. **Demo seed:** set `SEED_ON_START=true` on the web service (included in
+   `render.yaml`). Seed is idempotent and creates demo logins on each deploy.
+   Turn it off (`false`) once you go live with real data.
+6. Health check: `GET /api/health` → `{ "status": "ok" }`.
+7. Point the frontend API base URL at your Render service URL
    (e.g. `https://santrack-api.onrender.com`).
+
+**Seed from your laptop instead** (one-time, if you prefer not to seed on every start):
+
+```bash
+# Render dashboard → Postgres → Connections → External Database URL
+DATABASE_URL="postgres://..." pnpm migration:run
+DATABASE_URL="postgres://..." pnpm seed:prod
+```
 
 ### Manual service (not Blueprint)
 
@@ -56,6 +68,14 @@ production. Upgrade plans when you go live.
 
 Optional email on Render: add `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`
 on the web service if you want real mail instead of a no-op SMTP setup.
+
+## Live demo
+
+Step-by-step presenter script for all roles (manufacturer → warehouse → shop → consumer → regulator): **[docs/DEMO.md](docs/DEMO.md)**.
+
+```bash
+pnpm seed   # demo users + catalogue (run after migrations)
+```
 
 ## Conformance suite
 
