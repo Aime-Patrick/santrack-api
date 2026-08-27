@@ -302,7 +302,7 @@ describe('who may read scan counts', () => {
   });
 });
 
-describe('sold units still verify; wrong label type is explained', () => {
+describe('sold units still verify; serials and QR both resolve', () => {
   it('reports a sold identity as known and sold', async () => {
     const sold = {
       ...genuine,
@@ -329,13 +329,42 @@ describe('sold units still verify; wrong label type is explained', () => {
     });
   });
 
-  it('tells shoppers who paste an ST- serial to scan the QR instead', async () => {
-    const h = harness(null);
+  it('resolves a printed ST- serial when the QR is missing from the scan', async () => {
+    const bySerial = {
+      ...genuine,
+      code: 'ST-SKUD-000003',
+      qrCode: '84dd98c5-2cc0-47a6-9efc-01b33434cde0',
+    };
+    const items = {
+      findOne: jest
+        .fn()
+        .mockResolvedValueOnce(null) // qrCode miss
+        .mockResolvedValueOnce(bySerial), // code hit
+      manager: { marker: 'entity-manager' },
+    } as unknown as Repository<TraceableItem>;
 
-    const answer = await h.service.verify('ST-LPT-000001');
+    const attempts = {
+      query: jest.fn().mockResolvedValue([]),
+    } as unknown as Repository<VerificationAttempt>;
 
-    expect(answer.known).toBe(false);
-    expect(answer.verdict).toMatch(/printed serial/i);
-    expect(answer.verdict).toMatch(/QR/i);
+    const recorder = {
+      record: jest.fn().mockResolvedValue({}),
+    } as unknown as EventRecorder;
+
+    const service = new TraceabilityService(
+      items,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      attempts,
+      recorder,
+    );
+
+    const answer = await service.verify('ST-SKUD-000003');
+
+    expect(answer.known).toBe(true);
+    expect(answer.code).toBe('ST-SKUD-000003');
   });
 });

@@ -212,11 +212,11 @@ export class TraceController {
 export class VerificationController {
   constructor(private readonly traceability: TraceabilityService) {}
 
-  // Unauthenticated and answers about any code, so it is capped per address.
-  // Generous enough for a shopper checking a shelf, not for bulk probing.
+  // Unauthenticated and answers QR UUID or unit serial, so it is capped per
+  // address. Generous for a shopper on a shelf, tight enough against probing.
   @Get(':token')
   @Public()
-  @RateLimit('verify', 300, 60 * 1000)
+  @RateLimit('verify', 60, 60 * 1000)
   async verify(@Param('token') token: string) {
     return this.traceability.verify(token);
   }

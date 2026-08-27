@@ -203,15 +203,14 @@ export class TraceabilityService {
    * What a consumer gets from scanning a code without an account.
    * No holder, no location, no personal data - just identity and safety.
    *
-   * Looks up the opaque QR token ONLY. The printed human code is sequential,
-   * so accepting it here would let anyone walk the entire product catalogue
-   * one increment at a time (proposal section 16).
+   * Accepts the unit QR payload (UUID) and the printed unit serial (ST-…),
+   * because labels and scanners expose both. Product catalogue codes (GTIN /
+   * SKU) stay rejected — they name every pack of a product, not one unit.
+   * Rate limiting on the public route is what keeps sequential probing in check.
    */
   async verify(token: string): Promise<VerificationResponse> {
     const normalized = normalizeVerifyToken(token);
-    // Opaque QR payload only — never the printed ST- serial (enumeration).
-    // UUID case is normalised because some scanners upper-case hex.
-    const item = await this.items.findOne({ where: { qrCode: normalized } });
+    const item = await this.findVerifyIdentity(normalized);
 
     // Before the early return, so a code that resolves to nothing is counted.
     // That is the case this exists for.
@@ -262,6 +261,30 @@ export class TraceabilityService {
       blocked,
       verdict: verdict(item, recalled, expired),
     };
+  }
+
+  /**
+   * Resolve a consumer scan to one physical identity.
+   * QR UUID first, then printed serial — never product GTIN/SKU.
+   */
+  private async findVerifyIdentity(
+    token: string,
+  ): Promise<TraceableItem | null> {
+    const byQr = await this.items.findOne({ where: { qrCode: token } });
+    if (byQr) return byQr;
+
+    const byCode = await this.items.findOne({ where: { code: token } });
+    if (byCode) return byCode;
+
+    // Some guns / paste paths change case on the human serial.
+    if (token !== token.toUpperCase()) {
+      const upper = await this.items.findOne({
+        where: { code: token.toUpperCase() },
+      });
+      if (upper) return upper;
+    }
+
+    return null;
   }
 
   /**
@@ -573,7 +596,7 @@ const UUID_TOKEN =
 
 /**
  * Peel phone-camera / paste noise off a verify token before lookup.
- * Does not accept ST- serials — only shapes the opaque QR payload.
+ * Shapes QR UUIDs and /verify/… links; leaves ST- serials intact.
  */
 function normalizeVerifyToken(raw: string): string {
   let token = (raw ?? '').trim().replace(/^["']|["']$/g, '');
@@ -596,21 +619,14 @@ function normalizeVerifyToken(raw: string): string {
 }
 
 /**
- * Unknown codes get different copy when the scan is clearly the wrong kind of
- * label (printed serial / retail GTIN). We deliberately do not look those up —
- * confirming whether ST-000123 exists would re-open catalogue enumeration.
+ * Unknown codes: product catalogue barcodes get a specific explanation;
+ * anything else is simply not in the registry.
  */
 function unknownVerifyVerdict(token: string): string {
-  if (/^ST-/i.test(token) || /^[A-Z]{2,}-[A-Z0-9]+-\d+/i.test(token)) {
-    return (
-      'That looks like a printed serial, not the unit QR. ' +
-      'Scan the QR code on the same label — sold items still verify when the QR is scanned.'
-    );
-  }
   if (/^\d{8,14}$/.test(token)) {
     return (
       'That looks like a product barcode (GTIN), shared by every pack. ' +
-      'Scan the unique unit QR to verify this specific item.'
+      'Scan the unique unit QR or type the printed serial (ST-…) for this item.'
     );
   }
   return 'This code is not registered. Treat the product as unverified.';
