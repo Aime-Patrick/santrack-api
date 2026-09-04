@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
@@ -110,7 +110,9 @@ export class UserManagementService {
         inviterName: actor.fullName ?? actor.email,
         loginUrl: `${appUrl}/login`,
       })
-      .catch(() => undefined);
+      .catch((err) => {
+        new Logger(UserManagementService.name).error(`Failed to send invite email to ${email}:`, err);
+      });
 
     return {
       ...this.describe(user),
@@ -225,16 +227,81 @@ export class UserManagementService {
     await this.users.save(user);
 
     const appUrl = this.appPublicUrl();
-    void this.email
-      .sendAdminPasswordResetEmail({
-        to: user.email,
-        name: user.fullName ?? user.email,
-        organizationName: user.organization?.name ?? null,
-        temporaryPassword,
-        resetBy: actor.fullName ?? actor.email,
-        loginUrl: `${appUrl}/login`,
-      })
-      .catch(() => undefined);
+    await this.email.sendAdminPasswordResetEmail({
+      to: user.email,
+      name: user.fullName ?? user.email,
+      organizationName: user.organization?.name ?? null,
+      temporaryPassword,
+      resetBy: actor.fullName ?? actor.email,
+      loginUrl: `${appUrl}/login`,
+    });
+  }
+
+  async resendInvite(
+    actor: User,
+    userId: number,
+  ): Promise<Omit<User, 'passwordHash'> & { temporaryPassword?: string }> {
+    const user = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
+    if (!user) {
+      throw new NotFoundEntityException('User', userId);
+    }
+
+    this.requireVisible(actor, user);
+
+    const temporaryPassword = randomBytes(6).toString('base64url');
+    user.passwordHash = await hash(temporaryPassword, 10);
+    user.mustChangePassword = true;
+    const saved = await this.users.save(user);
+
+    const appUrl = this.appPublicUrl();
+    await this.email.sendInviteEmail({
+      to: user.email,
+      name: user.fullName ?? user.email,
+      organizationName: user.organization?.name ?? 'SANTRACK',
+      role: user.role,
+      temporaryPassword,
+      inviterName: actor.fullName ?? actor.email,
+      loginUrl: `${appUrl}/login`,
+    });
+
+    return {
+      ...this.describe(saved),
+      temporaryPassword,
+    };
+  }
+
+  async resendOrgAdminInvite(
+    actor: User,
+    organizationId: number,
+  ): Promise<Omit<User, 'passwordHash'> & { temporaryPassword?: string }> {
+    const user = await this.users.findOne({
+      where: {
+        organization: { id: organizationId },
+        role: UserRole.ORG_ADMIN,
+      },
+      relations: { organization: true },
+    });
+
+    if (!user) {
+      // Fallback: search for any active user in the organization
+      const fallbackUser = await this.users.findOne({
+        where: {
+          organization: { id: organizationId },
+        },
+        relations: { organization: true },
+      });
+
+      if (!fallbackUser) {
+        throw new TraceabilityRuleException('No registered user found for this organization to resend invite.');
+      }
+
+      return this.resendInvite(actor, fallbackUser.id);
+    }
+
+    return this.resendInvite(actor, user.id);
   }
 
   async remove(actor: User, userId: number): Promise<void> {

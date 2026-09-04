@@ -33,6 +33,7 @@ export interface ScanResult {
   productId?: number;
   batchId?: number;
   locationId?: number;
+  facilityId?: number;
   transferId?: number;
   /**
    * Whose place this is, when a location was scanned.
@@ -145,6 +146,7 @@ export class ScanService {
         kind: ScanKind.LOCATION,
         scanned,
         locationId: location.id,
+        facilityId: location.facility?.id,
         organizationId: location.organization?.id,
         describes: theirs
           ? `${location.name} at ${location.organization?.name ?? 'another business'}`

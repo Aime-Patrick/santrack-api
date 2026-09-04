@@ -1,10 +1,19 @@
 import {
+  IsArray,
+  IsDateString,
+  IsEmail,
   IsEnum,
   IsIn,
+  IsNumber,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
+  Min,
   MinLength,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import {
   OrganizationType,
   SELF_DECLARABLE_TYPES,
@@ -29,6 +38,121 @@ export class CreateOrganizationDto {
   @IsString()
   @MinLength(2, { message: 'Registration number looks too short' })
   registrationNumber?: string;
+
+  // ── Extended onboarding fields ──
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  licenseType?: string;
+
+  @IsOptional()
+  @IsDateString()
+  dateIncorporated?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  province?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  district?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  sector?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  cell?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  village?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OwnershipDto)
+  ownership?: OwnershipDto[];
+}
+
+export class OwnershipDto {
+  @IsString()
+  @MinLength(2)
+  name: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  percentage: number;
+
+  @IsOptional()
+  @IsString()
+  idNumber?: string;
+}
+
+/**
+ * The regulator's verdict on a registration application.
+ *
+ * Approval activates the business and issues its operating licence; rejection
+ * needs a reason, because the applicant has to know what to fix before they
+ * resubmit.
+ */
+/**
+ * One certificate uploaded against a registration application.
+ * Document type is required; number/expiry ride along for the review screen.
+ */
+export class AttachRegistrationDocumentDto {
+  @IsString()
+  documentType: string;
+
+  @IsOptional()
+  @IsString()
+  certificateNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  expiryDate?: string;
+}
+
+export class RegistrationDecisionDto {
+  @IsIn(['APPROVE', 'REJECT'], {
+    message: "Decision must be APPROVE or REJECT",
+  })
+  decision: 'APPROVE' | 'REJECT';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 /**

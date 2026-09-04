@@ -76,6 +76,7 @@ describe('licence queries after M1', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     return { instance, manager, saved };

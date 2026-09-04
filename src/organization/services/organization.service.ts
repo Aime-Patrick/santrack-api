@@ -1,8 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
+import { STORAGE_PROVIDER, StorageProvider } from '../../storage/storage.provider';
 import {
   DuplicateException,
   NotFoundEntityException,
@@ -13,15 +14,38 @@ import { NotificationsGateway } from '../../notifications/gateways/notifications
 import { NotificationType } from '../../notifications/entities/notification.entity';
 import { EmailService } from '../../email/email.service';
 import { Product } from '../../product/entities/product.entity';
-import { CreateOrganizationDto } from '../dto/organization.dto';
+import {
+  CreateOrganizationDto,
+  RegistrationDecisionDto,
+} from '../dto/organization.dto';
 import {
   OrganizationType,
   SELF_DECLARABLE_TYPES,
   isSelfDeclarable,
 } from '../organization-type.enum';
+import { OnboardingStatus } from '../onboarding-status.enum';
 import { Facility } from '../entities/facility.entity';
 import { Organization } from '../entities/organization.entity';
+import { OrganizationDocument } from '../entities/organization-document.entity';
+import { OrganizationOwner } from '../entities/organization-owner.entity';
 import { FacilityService } from './facility.service';
+
+/** A certificate uploaded with a registration application. */
+export interface UploadedFile {
+  originalname: string;
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+}
+
+const ALLOWED_CONTENT_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+];
+
+const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 
 /** One business as the industry registry reports it. */
 export interface RegistryEntry {
@@ -38,6 +62,8 @@ export interface RegistryEntry {
 
 @Injectable()
 export class OrganizationService {
+  private readonly logger = new Logger(OrganizationService.name);
+
   constructor(
     @InjectRepository(Organization)
     private readonly organizations: Repository<Organization>,
@@ -47,13 +73,18 @@ export class OrganizationService {
     private readonly products: Repository<Product>,
     @InjectRepository(Facility)
     private readonly facilities: Repository<Facility>,
+    @InjectRepository(OrganizationDocument)
+    private readonly documents: Repository<OrganizationDocument>,
+    @InjectRepository(OrganizationOwner)
+    private readonly owners: Repository<OrganizationOwner>,
+    @Inject(STORAGE_PROVIDER)
+    private readonly storage: StorageProvider,
     private readonly sites: FacilityService,
     private readonly licenses: LicenseService,
     private readonly notifications: NotificationsGateway,
     private readonly email: EmailService,
     config: ConfigService,
   ) {
-    this.provisionalDays = config.get<number>('licensing.provisionalDays') ?? 90;
     this.appPublicUrl = (
       config.get<string>('appPublicUrl') ??
       (config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'])[0] ??
@@ -61,7 +92,6 @@ export class OrganizationService {
     ).replace(/\/$/, '');
   }
 
-  private readonly provisionalDays: number;
   private readonly appPublicUrl: string;
 
   /**
@@ -97,8 +127,39 @@ export class OrganizationService {
         type: dto.type,
         tin: dto.tin?.trim() || null,
         registrationNumber: dto.registrationNumber?.trim() || null,
+        email: dto.email?.trim() || null,
+        phone: dto.phone?.trim() || null,
+        licenseType: dto.licenseType?.trim() || null,
+        dateIncorporated: dto.dateIncorporated ?? null,
+        description: dto.description?.trim() || null,
+        province: dto.province?.trim() || null,
+        district: dto.district?.trim() || null,
+        sector: dto.sector?.trim() || null,
+        cell: dto.cell?.trim() || null,
+        village: dto.village?.trim() || null,
+        // A registration is an application, not a grant: no licence is issued
+        // until a regulator approves it (Digital Tax Stamp flow).
+        onboardingStatus: OnboardingStatus.PENDING,
       }),
     );
+
+    // Ownership is part of the registration record (ownership transparency the
+    // regulator screens against), not something attached later.
+    if (dto.ownership && dto.ownership.length > 0) {
+      await this.owners.save(
+        dto.ownership.map((owner) =>
+          this.owners.create({
+            organization,
+            organizationId: organization.id,
+            name: owner.name.trim(),
+            email: owner.email?.trim() || null,
+            phone: owner.phone?.trim() || null,
+            percentage: owner.percentage,
+            idNumber: owner.idNumber?.trim() || null,
+          }),
+        ),
+      );
+    }
 
     /**
      * Every organization gets a site (DR-02).
@@ -126,38 +187,252 @@ export class OrganizationService {
     actor.organization = organization;
     await this.users.save(actor);
 
-    /**
-     * Same grace period the licensing migration gave every business that
-     * already existed. Without it the migration's cut-off leaks into normal
-     * operation: everyone onboarded before that date trades on a provisional
-     * licence while everyone who signs up afterwards is non-compliant from
-     * their first action, which is an accident of timing rather than a rule
-     * anyone chose.
-     *
-     * Deliberately not awaited into the failure path - a licensing problem
-     * must not cost someone their organization, which is already saved above.
-     */
-    await this.licenses.issueProvisional(organization, this.provisionalDays);
-
     await this.notifications.sendToUser(actor.id, {
       type: NotificationType.INFO,
-      title: 'Welcome to SanTrack',
+      title: 'Registration submitted',
       message:
-        `${organization.name} is set up. Check your compliance status to see ` +
-        'your provisional licence and facility details.',
+        `${organization.name} is registered and waiting for a regulator to ` +
+        'review it. You will be notified by email once a decision is made.',
       module: 'compliance',
-      actionUrl: '/dashboard/compliance',
+      actionUrl: '/dashboard',
     });
 
     void this.email
-      .sendWelcomeEmail(
-        actor.email,
-        actor.fullName ?? actor.email,
-        this.appPublicUrl,
-      )
+      .sendRegistrationSubmitted({
+        to: actor.email,
+        companyName: organization.name,
+      })
       .catch(() => undefined);
 
     return organization;
+  }
+
+  // -------------------------------------------------- registration review
+
+  /**
+   * Self-registrations awaiting a regulator's decision, oldest first, with
+   * their declared owners attached so the review screen is one read.
+   *
+   * Regulator-only: callers reach it through the DECIDE_LICENCES gate, the
+   * same one that guards licence screening.
+   */
+  async pendingRegistrations(): Promise<Organization[]> {
+    return this.organizations.find({
+      where: { onboardingStatus: OnboardingStatus.PENDING },
+      relations: { owners: true },
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  /**
+   * The regulator's verdict on a registration application.
+   *
+   * Approving activates the business and issues its operating licence; the
+   * licence issuance is deliberately not allowed to fail the decision.
+   * Rejecting records why, so the applicant can fix it and reapply.
+   */
+  async decideRegistration(
+    regulator: Organization,
+    actor: User,
+    organizationId: number,
+    dto: RegistrationDecisionDto,
+  ): Promise<Organization> {
+    if (regulator.type !== OrganizationType.REGULATOR) {
+      throw new TraceabilityRuleException(
+        'Only a licensing authority can approve registrations',
+      );
+    }
+
+    const organization = await this.organizations.findOne({
+      where: { id: organizationId },
+    });
+    if (!organization) {
+      throw new NotFoundEntityException('Organization', organizationId);
+    }
+    if (organization.onboardingStatus !== OnboardingStatus.PENDING) {
+      throw new TraceabilityRuleException(
+        `${organization.name}'s registration is already ${organization.onboardingStatus.toLowerCase()}`,
+      );
+    }
+
+    if (dto.decision === 'REJECT') {
+      if (!dto.reason?.trim()) {
+        throw new TraceabilityRuleException(
+          'A rejection needs a reason - the applicant has to know what to fix',
+        );
+      }
+      organization.onboardingStatus = OnboardingStatus.REJECTED;
+      organization.rejectionReason = dto.reason.trim();
+      const saved = await this.organizations.save(organization);
+      void this.notifyRegistrationDecision(saved, actor, 'REJECTED');
+      return saved;
+    }
+
+    organization.onboardingStatus = OnboardingStatus.APPROVED;
+    organization.rejectionReason = null;
+    const saved = await this.organizations.save(organization);
+
+    // Fire-and-forget like the licence service's own notification path: a
+    // licensing problem must not roll back an approval that is already saved.
+    void this.licenses
+      .issueOnApproval(saved, regulator, actor)
+      .then(() => this.notifyRegistrationDecision(saved, actor, 'APPROVED'))
+      .catch((error: Error) =>
+        this.logger.warn(
+          `Licence/notification for approved registration ${saved.name} failed: ${error.message}`,
+        ),
+      );
+    return saved;
+  }
+
+  /** Every user attached to an organization. */
+  private async staffOf(organizationId: number): Promise<User[]> {
+    return this.users.find({ where: { organization: { id: organizationId } } });
+  }
+
+  /**
+   * Tells everyone at an approved/rejected business what happened - an in-app
+   * notification for each staff member and an email per address. Fire and
+   * forget; email failures are logged, not thrown.
+   */
+  private async notifyRegistrationDecision(
+    organization: Organization,
+    regulator: User,
+    outcome: 'APPROVED' | 'REJECTED',
+  ): Promise<void> {
+    const staff = await this.staffOf(organization.id);
+    await Promise.allSettled(
+      staff.map(async (user) => {
+        if (outcome === 'APPROVED') {
+          await this.notifications.sendToUser(user.id, {
+            type: NotificationType.SUCCESS,
+            title: 'Registration approved',
+            message: `${organization.name} is approved. Your operating licence is active and you can now work on the platform.`,
+            module: 'compliance',
+            actionUrl: '/dashboard',
+          });
+          if (user.email) {
+            await this.email
+              .sendRegistrationApproved({
+                to: user.email,
+                companyName: organization.name,
+                loginUrl: `${this.appPublicUrl}/login`,
+              })
+              .catch(() => undefined);
+          }
+        } else {
+          await this.notifications.sendToUser(user.id, {
+            type: NotificationType.WARNING,
+            title: 'Registration rejected',
+            message:
+              `${organization.name}'s registration was rejected: ` +
+              `${organization.rejectionReason ?? 'no reason given'}.`,
+            module: 'compliance',
+            actionUrl: '/dashboard',
+          });
+          if (user.email) {
+            await this.email
+              .sendRegistrationRejected({
+                to: user.email,
+                companyName: organization.name,
+                reason: organization.rejectionReason ?? 'No reason given.',
+              })
+              .catch(() => undefined);
+          }
+        }
+      }),
+    );
+  }
+
+  // ------------------------------------------------- registration documents
+
+  /**
+   * Files a certificate against a registration application (RDB certificate,
+   * FDA premise certificate, import licence...). Only the applying
+   * organization may attach while its application is still pending.
+   */
+  async attachDocument(
+    organization: Organization,
+    documentType: string,
+    file: UploadedFile,
+    certificateNumber?: string,
+    expiryDate?: string,
+  ): Promise<OrganizationDocument> {
+    if (!ALLOWED_CONTENT_TYPES.includes(file.mimetype)) {
+      throw new TraceabilityRuleException(
+        `${file.mimetype} is not an accepted certificate format. Upload a PDF or an image.`,
+      );
+    }
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      throw new TraceabilityRuleException(
+        `${file.originalname} is larger than the ${MAX_DOCUMENT_BYTES / (1024 * 1024)}MB limit`,
+      );
+    }
+
+    // Stored before the row is written: an orphaned object costs disk, whereas
+    // a row pointing at bytes that were never written is a broken download.
+    const stored = await this.storage.put({
+      folder: `organizations/${organization.id}/documents`,
+      filename: file.originalname,
+      contentType: file.mimetype,
+      content: file.buffer,
+    });
+
+    return this.documents.save(
+      this.documents.create({
+        organization,
+        organizationId: organization.id,
+        documentType,
+        certificateNumber: certificateNumber?.trim() || null,
+        expiryDate: expiryDate || null,
+        filename: file.originalname,
+        contentType: stored.contentType,
+        sizeBytes: stored.size,
+        storageKey: stored.key,
+      }),
+    );
+  }
+
+  /**
+   * The certificates filed against a registration. The applicant may read its
+   * own; a licensing authority may read any, which is what screening needs.
+   */
+  async documentsFor(reader: Organization, organizationId: number) {
+    const target = await this.organizations.findOne({
+      where: { id: organizationId },
+    });
+    if (!target) {
+      throw new NotFoundEntityException('Organization', organizationId);
+    }
+    const own = target.id === reader.id;
+    if (!own && reader.type !== OrganizationType.REGULATOR) {
+      throw new TraceabilityRuleException(
+        "Another business's registration documents are for the licensing authority",
+      );
+    }
+
+    return this.documents.find({
+      where: { organizationId },
+      order: { uploadedAt: 'ASC' },
+    });
+  }
+
+  /** Streams a filed certificate back. Holder and regulators only. */
+  async readDocument(
+    reader: Organization,
+    documentId: number,
+  ): Promise<{ document: OrganizationDocument; content: Buffer }> {
+    const document = await this.documents.findOne({
+      where: { id: documentId },
+    });
+    if (!document) {
+      throw new NotFoundEntityException('Document', documentId);
+    }
+    const own = document.organizationId === reader.id;
+    if (!own && reader.type !== OrganizationType.REGULATOR) {
+      throw new NotFoundEntityException('Document', documentId);
+    }
+    return { document, content: await this.storage.get(document.storageKey) };
   }
 
   /**
@@ -300,7 +575,13 @@ export class OrganizationService {
     }
 
     return this.organizations.save(
-      this.organizations.create({ name: trimmed, type: OrganizationType.REGULATOR }),
+      this.organizations.create({
+        name: trimmed,
+        type: OrganizationType.REGULATOR,
+        // Platform-registered authorities skip the business application flow;
+        // they are approved by the operator who stood them up.
+        onboardingStatus: OnboardingStatus.APPROVED,
+      }),
     );
   }
 
@@ -377,6 +658,10 @@ export class OrganizationService {
     }
 
     organization.type = OrganizationType.REGULATOR;
+    // If a PENDING business was ever promoted, its registration is now moot -
+    // standing was granted by the platform, which is the approval.
+    organization.onboardingStatus = OnboardingStatus.APPROVED;
+    organization.rejectionReason = null;
     return this.organizations.save(organization);
   }
 }

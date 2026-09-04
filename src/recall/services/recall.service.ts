@@ -11,11 +11,15 @@ import {
 } from '../../common/errors';
 import { TraceableItem } from '../../item/entities/traceable-item.entity';
 import { ItemStatus } from '../../item/item.enums';
+import { ItemService, requireHeldBy } from '../../item/services/item.service';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
-import { RecallDto } from '../dto/recall.dto';
+import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
+import { RecallDto, RecallRecoveryDto, RecallRecoveryOutcome } from '../dto/recall.dto';
+import { RegulatoryCaseService } from '../../licensing/services/regulatory-case.service';
+import { RegulatoryCase, RegulatoryCaseEvent, RegulatoryCaseEventType } from '../../licensing/entities/regulatory-case.entity';
 
 export interface HolderImpact {
   organizationId: number | null;
@@ -35,6 +39,8 @@ export interface RecallImpact {
   totalUnits: number;
   recoverable: number;
   recoverableUnits: number;
+  quarantined: number;
+  quarantinedUnits: number;
   soldToConsumers: number;
   soldUnits: number;
   destroyed: number;
@@ -55,14 +61,16 @@ export class RecallService {
     private readonly batches: Repository<Batch>,
     @InjectRepository(TraceableItem)
     private readonly items: Repository<TraceableItem>,
+    private readonly itemService: ItemService,
     private readonly recorder: EventRecorder,
+    private readonly regulatoryCases: RegulatoryCaseService,
   ) {}
 
   /** List all recalled batches with impact summary. */
   async list() {
     const recalled = await this.batches.find({
       where: { status: BatchStatus.RECALLED },
-      relations: { manufacturer: true, product: true },
+      relations: { manufacturer: true, product: true, facility: true },
       order: { statusChangedAt: 'DESC' },
     });
 
@@ -78,7 +86,7 @@ export class RecallService {
   async get(batchId: number) {
     const batch = await this.batches.findOne({
       where: { id: batchId },
-      relations: { manufacturer: true, product: true },
+      relations: { manufacturer: true, product: true, facility: true },
     });
     if (!batch) {
       throw new NotFoundEntityException('Batch', batchId);
@@ -93,6 +101,28 @@ export class RecallService {
 
   private async describeRecall(batch: Batch) {
     const impact = await this.impact(batch.id);
+
+    const caseRecord = await this.dataSource.getRepository(RegulatoryCase).findOne({
+      where: { batch: { id: batch.id } },
+      relations: { leadAuthority: true, assignedTo: true },
+      order: { openedAt: 'DESC' },
+    });
+
+    const recentEvents = await this.dataSource
+      .getRepository(TraceabilityEvent)
+      .createQueryBuilder('e')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .leftJoinAndSelect('e.sourceOrganization', 'org')
+      .leftJoinAndSelect('e.sourceLocation', 'loc')
+      .leftJoinAndSelect('e.item', 'item')
+      .where(
+        'e.batch_id = :batchId OR (item.id IS NOT NULL AND item.batch_id = :batchId)',
+        { batchId: batch.id },
+      )
+      .orderBy('e.occurredAt', 'DESC')
+      .take(15)
+      .getMany();
+
     return {
       batchId: batch.id,
       batchNumber: batch.batchCode,
@@ -105,14 +135,63 @@ export class RecallService {
       affectedUnits: impact.totalUnits,
       affectedIdentities: impact.totalIdentities,
       recoverableUnits: impact.recoverableUnits,
+      quarantinedUnits: impact.quarantinedUnits,
       soldUnits: impact.soldUnits,
       destroyedUnits: impact.destroyedUnits,
+      manufacturedOn: batch.manufacturedOn ?? null,
+      expiresOn: batch.expiresOn ?? null,
+      facility: batch.facility
+        ? {
+            id: batch.facility.id,
+            name: batch.facility.name,
+            code: batch.facility.code,
+          }
+        : null,
+      product: batch.product
+        ? {
+            id: batch.product.id,
+            name: batch.product.name,
+            sku: batch.product.sku,
+            category: batch.product.category,
+            traceabilityLevel: batch.product.traceabilityLevel,
+          }
+        : null,
+      linkedCase: caseRecord
+        ? {
+            id: caseRecord.id,
+            caseNumber: caseRecord.caseNumber,
+            status: caseRecord.status,
+            priority: caseRecord.priority,
+            leadAuthorityName: caseRecord.leadAuthority?.name ?? null,
+          }
+        : null,
       impactedLocations: impact.holders.map((h) => ({
         locationId: h.organizationId ?? 0,
         locationName: h.organizationName ?? 'Unknown',
         eventType: h.status,
         qty: h.units,
         identities: h.count,
+      })),
+      recentEvents: recentEvents.map((e) => ({
+        id: e.id,
+        type: e.type,
+        occurredAt: e.occurredAt.toISOString(),
+        recordedAt: e.recordedAt?.toISOString() ?? e.occurredAt.toISOString(),
+        actorName: e.actor?.fullName ?? e.actor?.email ?? 'System',
+        actorEmail: e.actor?.email ?? null,
+        organizationName: e.sourceOrganization?.name ?? null,
+        organizationId: e.sourceOrganization?.id ?? null,
+        locationName: e.sourceLocation?.name ?? null,
+        destinationOrganizationName: e.destinationOrganization?.name ?? null,
+        destinationLocationName: e.destinationLocation?.name ?? null,
+        itemCode: e.item?.code ?? null,
+        itemQrCode: e.item?.qrCode ?? null,
+        batchCode: e.batch?.batchCode ?? null,
+        relatedItemCode: e.relatedItem?.code ?? null,
+        deviceId: e.deviceId ?? null,
+        consumerRef: e.consumerRef ?? null,
+        notes: e.notes ?? null,
+        quantity: e.quantity,
       })),
     };
   }
@@ -171,8 +250,11 @@ export class RecallService {
 
         first = false;
       }
-    });
 
+      if (batch.manufacturer) {
+        await this.regulatoryCases.openRecallCase(actor, batch, manager);
+      }
+    });
     return this.impact(dto.batchId);
   }
 
@@ -223,6 +305,60 @@ export class RecallService {
     return this.impact(batchId);
   }
 
+  /** A scan changes the physical item's state and proves the outcome in the linked case. */
+  async recordRecovery(
+    organization: Organization,
+    actor: User,
+    dto: RecallRecoveryDto,
+  ): Promise<{ item: TraceableItem; outcome: RecallRecoveryOutcome; caseId: number | null; impact: RecallImpact }> {
+    await this.recorder.rejectReplay(dto.meta);
+    const result = await this.dataSource.transaction(async (manager) => {
+      const item = await this.itemService.require(dto.qrCode, manager);
+      requireHeldBy(item, organization);
+      if (!item.batch) throw new TraceabilityRuleException(`${item.code} has no batch and cannot be recovered against a recall`);
+      const batch = await requireBatch(manager, item.batch.id);
+      if (batch.status !== BatchStatus.RECALLED) throw new TraceabilityRuleException(`Batch ${batch.batchCode} is not under recall`);
+      if (![ItemStatus.RECALLED, ItemStatus.RETURNED].includes(item.status)) {
+        throw new TraceabilityRuleException(`${item.code} is ${item.status}; only a recalled or returned identity can be recorded as recovered`);
+      }
+
+      const affected = await this.itemService.withDescendants(manager, item);
+      if (affected.some((member) => member.batch?.id !== batch.id)) {
+        throw new TraceabilityRuleException('This container holds identities from another batch; scan the recalled identity directly');
+      }
+      const target = dto.outcome === RecallRecoveryOutcome.DESTROYED ? ItemStatus.DESTROYED : ItemStatus.QUARANTINED;
+      const eventType = dto.outcome === RecallRecoveryOutcome.DESTROYED ? EventType.DESTROYED : EventType.QUARANTINED;
+      for (const member of affected) {
+        member.status = target;
+        await manager.save(TraceableItem, member);
+        await this.recorder.record(manager, {
+          item: member,
+          type: eventType,
+          actor,
+          meta: member.id === item.id ? dto.meta : null,
+          sourceOrganization: organization,
+          sourceLocation: member.location,
+          relatedItem: member.id === item.id ? null : item,
+          quantity: member.quantity,
+          notes: `Recall recovery: ${dto.reason?.trim() || dto.outcome.toLowerCase()}`,
+        });
+      }
+
+      const caseRecord = await manager.findOne(RegulatoryCase, {
+        where: { batch: { id: batch.id } }, order: { openedAt: 'DESC' },
+      });
+      if (caseRecord) {
+        await manager.save(manager.create(RegulatoryCaseEvent, {
+          case: caseRecord, actor, type: RegulatoryCaseEventType.RECALL_RECOVERY_RECORDED,
+          summary: `Recall recovery: ${item.code} ${dto.outcome.toLowerCase()}`,
+          detail: { qrCode: item.qrCode, itemCode: item.code, outcome: dto.outcome, organizationId: organization.id, organizationName: organization.name, quantity: affected.reduce((total, member) => total + member.quantity, 0), reason: dto.reason?.trim() || null },
+        }));
+      }
+      return { item: await this.itemService.require(item.qrCode, manager), caseId: caseRecord?.id ?? null };
+    });
+    return { ...result, outcome: dto.outcome, impact: await this.impact(result.item.batch!.id) };
+  }
+
   /** Where the batch is now, so a recall can be worked rather than announced. */
   async impact(batchId: number): Promise<RecallImpact> {
     const batch = await this.batches.findOne({ where: { id: batchId } });
@@ -258,6 +394,8 @@ export class RecallService {
     let totalUnits = 0;
     let recoverable = 0;
     let recoverableUnits = 0;
+    let quarantined = 0;
+    let quarantinedUnits = 0;
     let soldToConsumers = 0;
     let soldUnits = 0;
     let destroyed = 0;
@@ -284,6 +422,9 @@ export class RecallService {
       } else if (row.status === ItemStatus.DESTROYED) {
         destroyed += count;
         destroyedUnits += units;
+      } else if (row.status === ItemStatus.QUARANTINED) {
+        quarantined += count;
+        quarantinedUnits += units;
       } else {
         recoverable += count;
         recoverableUnits += units;
@@ -302,6 +443,8 @@ export class RecallService {
       totalUnits,
       recoverable,
       recoverableUnits,
+      quarantined,
+      quarantinedUnits,
       soldToConsumers,
       soldUnits,
       destroyed,

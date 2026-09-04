@@ -3,27 +3,42 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
   Param,
   ParseIntPipe,
   Post,
   Put,
   Query,
+  Res,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { Response } from 'express';
 import { Capability } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
-import { CurrentUser, RequireCapability } from '../../common/decorators';
+import {
+  ActingOrg,
+  CurrentUser,
+  RequireCapability,
+} from '../../common/decorators';
 import { TraceabilityRuleException } from '../../common/errors';
 import {
   AmendOrganizationDto,
+  AttachRegistrationDocumentDto,
   CreateOrganizationDto,
   GrantRegulatoryStandingDto,
   RegisterRegulatorDto,
+  RegistrationDecisionDto,
   RevokeRegulatoryStandingDto,
 } from '../dto/organization.dto';
 import { OrganizationType } from '../organization-type.enum';
 import { Organization } from '../entities/organization.entity';
-import { OrganizationService } from '../services/organization.service';
+import {
+  OrganizationService,
+  UploadedFile as DocUpload,
+} from '../services/organization.service';
 
 @ApiTags('Organizations')
 @ApiBearerAuth()
@@ -31,7 +46,7 @@ import { OrganizationService } from '../services/organization.service';
 export class OrganizationController {
   constructor(private readonly organizations: OrganizationService) {}
 
-  /** Onboarding - creates the business the caller acts for. */
+  /** Onboarding - submits the business the caller acts for, for approval. */
   @Post()
   async create(@CurrentUser() actor: User, @Body() dto: CreateOrganizationDto) {
     return describe(await this.organizations.create(actor, dto));
@@ -69,6 +84,112 @@ export class OrganizationController {
       products: entry.products,
       licenses: entry.licenses,
     }));
+  }
+
+  /**
+   * Registration applications awaiting a regulator's decision.
+   *
+   * Declared before any parameterised route on purpose: Nest matches in
+   * declaration order, and `pending` must never be read as an id.
+   */
+  @Get('pending')
+  @RequireCapability(Capability.DECIDE_LICENCES)
+  async pending() {
+    const rows = await this.organizations.pendingRegistrations();
+    return rows.map((row) => ({
+      ...describe(row),
+      ownership: (row.owners ?? []).map((owner) => ({
+        id: owner.id,
+        name: owner.name,
+        email: owner.email,
+        phone: owner.phone,
+        percentage: Number(owner.percentage),
+        idNumber: owner.idNumber,
+      })),
+    }));
+  }
+
+  /**
+   * The regulator's verdict on a registration application. Approval activates
+   * the business and issues its operating licence; rejection records why.
+   */
+  @Post(':id/decision')
+  @HttpCode(200)
+  @RequireCapability(Capability.DECIDE_LICENCES)
+  async decide(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RegistrationDecisionDto,
+  ) {
+    return describe(await this.organizations.decideRegistration(regulator, actor, id, dto));
+  }
+
+  /**
+   * Files a certificate against a registration application. The applicant
+   * uploads its RDB / FDA / import certificates here while the application is
+   * pending; the regulator sees them in the review screen.
+   */
+  @Post(':id/documents')
+  @RequireCapability(Capability.MANAGE_CATALOG)
+  @UseInterceptors(FileInterceptor('file'))
+  async attachDocument(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AttachRegistrationDocumentDto,
+    @UploadedFile() file?: DocUpload,
+  ) {
+    if (organization.id !== id) {
+      throw new TraceabilityRuleException(
+        'Documents can only be attached to your own registration',
+      );
+    }
+    if (!file) {
+      throw new TraceabilityRuleException('Attach a file under the "file" field');
+    }
+    const document = await this.organizations.attachDocument(
+      organization,
+      dto.documentType,
+      file,
+      dto.certificateNumber,
+      dto.expiryDate,
+    );
+    return describeDocument(document);
+  }
+
+  /**
+   * The certificates filed against a registration. The applicant may read its
+   * own; the licensing authority may read any, which is what screening needs.
+   */
+  @Get(':id/documents')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async documents(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const rows = await this.organizations.documentsFor(organization, id);
+    return rows.map(describeDocument);
+  }
+
+  /** Streams a filed certificate back. Holder and regulators only. */
+  @Get('documents/:documentId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async download(
+    @ActingOrg() organization: Organization,
+    @Param('documentId', ParseIntPipe) documentId: number,
+    @Res() response: Response,
+  ): Promise<void> {
+    const { document, content } = await this.organizations.readDocument(
+      organization,
+      documentId,
+    );
+    response
+      .type(document.contentType)
+      .setHeader(
+        'Content-Disposition',
+        `attachment; filename="${document.filename.replace(/["\r\n]/g, '')}"`,
+      )
+      .send(content);
   }
 
   /**
@@ -150,7 +271,41 @@ function describe(organization: Organization) {
     type: organization.type,
     tin: organization.tin,
     registrationNumber: organization.registrationNumber,
+    email: organization.email,
+    phone: organization.phone,
+    licenseType: organization.licenseType,
+    dateIncorporated: organization.dateIncorporated,
+    description: organization.description,
+    province: organization.province,
+    district: organization.district,
+    sector: organization.sector,
+    cell: organization.cell,
+    village: organization.village,
+    onboardingStatus: organization.onboardingStatus,
+    rejectionReason: organization.rejectionReason,
     createdAt: organization.createdAt,
+  };
+}
+
+function describeDocument(document: {
+  id: number;
+  documentType: string;
+  certificateNumber: string | null;
+  expiryDate: string | null;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedAt: Date;
+}) {
+  return {
+    id: document.id,
+    documentType: document.documentType,
+    certificateNumber: document.certificateNumber,
+    expiryDate: document.expiryDate,
+    filename: document.filename,
+    contentType: document.contentType,
+    sizeBytes: document.sizeBytes,
+    uploadedAt: document.uploadedAt,
   };
 }
 

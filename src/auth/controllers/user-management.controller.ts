@@ -88,6 +88,26 @@ export class UserController {
     return { message: 'Password reset successfully' };
   }
 
+  /** Resend invite email with a fresh temporary password. */
+  @Post(':id/resend-invite')
+  @RequireCapability(Capability.MANAGE_USERS)
+  async resendInvite(
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    return this.userMgmt.resendInvite(actor, id);
+  }
+
+  /** Resend invite email to the administrator of an organization. */
+  @Post('resend-org-admin-invite/:organizationId')
+  @RequireCapability(Capability.ADMINISTER_PLATFORM)
+  async resendOrgAdminInvite(
+    @CurrentUser() actor: User,
+    @Param('organizationId', ParseIntPipe) organizationId: number,
+  ) {
+    return this.userMgmt.resendOrgAdminInvite(actor, organizationId);
+  }
+
   /**
    * Deactivate (remove) a user. A user cannot deactivate their own account.
    */

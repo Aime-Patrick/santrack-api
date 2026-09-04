@@ -871,6 +871,78 @@ export class LicenseService {
     }
   }
 
+  /**
+   * Issues the operating licence once a regulator approves a registration.
+   *
+   * This is the approval step of the Digital Tax Stamp flow: a business that
+   * signs itself up stays PENDING and holds no licence until a regulator
+   * approves it. Approval is what grants the licence - unlike the old
+   * onboarding grace, it is a real regulatory decision with an issuing
+   * authority, an officer, and an expiry drawn from the category.
+   *
+   * Same never-throws contract as `issueProvisional`: a licensing hiccup must
+   * not roll back the registration decision that triggered it.
+   */
+  async issueOnApproval(
+    organization: Organization,
+    regulator: Organization,
+    actor: User,
+  ): Promise<License | null> {
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const category = await manager.findOne(LicenseCategory, {
+          where: {
+            activity: activityForType(organization.type) as LicensedActivity,
+            active: true,
+          },
+        });
+        if (!category) {
+          return null;
+        }
+
+        // Organization-grained, matching issueProvisional: the question is
+        // whether this business already holds cover, not which site has it.
+        const existing = await manager.findOne(License, {
+          where: { organization: { id: organization.id }, facilityId: IsNull() },
+        });
+        if (existing) {
+          return null;
+        }
+
+        const issuedOn = todayIso();
+        const license = await manager.save(
+          manager.create(License, {
+            licenseNumber: await this.nextNumber(manager, category.code),
+            organization,
+            category,
+            status: LicenseStatus.ACTIVE,
+            provisional: false,
+            issuedBy: regulator,
+            reviewedBy: actor,
+            issuedOn,
+            expiresOn: addMonths(issuedOn, category.validityMonths),
+            statusReason: `Registration approved by ${regulator.name}`,
+            statusChangedAt: new Date(),
+          }),
+        );
+
+        await this.log(manager, license, actor, LicenseEventType.APPROVED, {
+          to: LicenseStatus.ACTIVE,
+          notes: `Licence issued when ${regulator.name} approved the registration`,
+        });
+
+        return license;
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Could not issue a licence to ${organization.name} on registration approval: ${
+          (error as Error).message
+        }`,
+      );
+      return null;
+    }
+  }
+
   private async log(
     manager: EntityManager,
     license: License,

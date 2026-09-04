@@ -56,6 +56,22 @@ function service(organization: Record<string, unknown> | null) {
       ),
     },
   };
+  const documents = {
+    find: jest.fn().mockResolvedValue([]),
+    save: jest.fn((row: unknown) => Promise.resolve(row)),
+    create: jest.fn((row: unknown) => row),
+    findOne: jest.fn().mockResolvedValue(null),
+  };
+  const owners = {
+    save: jest.fn((rows: unknown) => Promise.resolve(rows)),
+    create: jest.fn((row: unknown) => row),
+  };
+  const storage = {
+    put: jest.fn((input: unknown) =>
+      Promise.resolve({ key: 'org-docs/1', size: 100, contentType: 'image/png' }),
+    ),
+    get: jest.fn().mockResolvedValue(Buffer.from('bytes')),
+  };
   // Onboarding no longer mints its own FAC- code; it calls the same service
   // the facilities endpoint calls, so there is one numbering path.
   const sites = {
@@ -66,12 +82,16 @@ function service(organization: Record<string, unknown> | null) {
   const licenses = {
     listFor: jest.fn().mockResolvedValue([]),
     issueProvisional: jest.fn().mockResolvedValue(null),
+    issueOnApproval: jest.fn().mockResolvedValue(null),
   };
   const notifications = { sendToUser: jest.fn().mockResolvedValue({}) };
-  const email = { sendWelcomeEmail: jest.fn().mockResolvedValue(undefined) };
+  const email = {
+    sendRegistrationSubmitted: jest.fn().mockResolvedValue(undefined),
+    sendRegistrationApproved: jest.fn().mockResolvedValue(undefined),
+    sendRegistrationRejected: jest.fn().mockResolvedValue(undefined),
+  };
   const config = {
     get: jest.fn((key: string) => {
-      if (key === 'licensing.provisionalDays') return 90;
       if (key === 'appPublicUrl') return 'http://localhost:3000';
       return undefined;
     }),
@@ -83,6 +103,9 @@ function service(organization: Record<string, unknown> | null) {
       users as never,
       products as never,
       facilities as never,
+      documents as never,
+      owners as never,
+      storage as never,
       sites as never,
       licenses as never,
       notifications as never,
@@ -92,6 +115,9 @@ function service(organization: Record<string, unknown> | null) {
     organizations,
     users,
     facilities,
+    documents,
+    owners,
+    storage,
     sites,
     licenses,
     notifications,
@@ -218,30 +244,34 @@ describe('creating an organization', () => {
     expect(users.save).toHaveBeenCalledTimes(1);
   });
 
-  it('issues the onboarding grace licence', async () => {
-    // Without it, everyone onboarded after the licensing migration would be
-    // non-compliant from their first action - an accident of timing rather
-    // than a rule anyone chose.
+  it('does not issue a licence while the registration is pending approval', async () => {
+    // A registration is an application, not a grant: the operating licence
+    // only appears when a regulator approves it (Digital Tax Stamp flow).
     const { instance, licenses } = service(null);
 
     await instance.create(actor(), dto);
 
-    expect(licenses.issueProvisional).toHaveBeenCalledTimes(1);
-    expect(licenses.issueProvisional.mock.calls[0][1]).toBe(90);
+    expect(licenses.issueProvisional).not.toHaveBeenCalled();
+    expect(licenses.issueOnApproval).not.toHaveBeenCalled();
   });
 
-  it('sends a welcome notification pointing to compliance', async () => {
-    const { instance, notifications, email } = service(null);
+  it('leaves the new organization pending and tells the applicant', async () => {
+    const { instance, notifications, email, organizations } = service(null);
 
-    await instance.create(actor(), dto);
+    const created = (await instance.create(actor(), dto)) as unknown as {
+      onboardingStatus: string;
+    };
 
+    expect(created.onboardingStatus).toBe('PENDING');
     expect(notifications.sendToUser).toHaveBeenCalledTimes(1);
     const [userId, payload] = notifications.sendToUser.mock.calls[0];
     expect(userId).toBe(5);
-    expect(payload.title).toBe('Welcome to SanTrack');
+    expect(payload.title).toBe('Registration submitted');
     expect(payload.module).toBe('compliance');
-    expect(payload.actionUrl).toBe('/dashboard/compliance');
-    expect(email.sendWelcomeEmail).toHaveBeenCalledTimes(1);
+    expect(email.sendRegistrationSubmitted).toHaveBeenCalledTimes(1);
+    // The org is saved, then the facility transaction runs, then the actor is
+    // attached - the email path is fire-and-forget, so no welcome email.
+    expect(organizations.save).toHaveBeenCalled();
   });
 
   it('refuses a second organization for someone who already acts for one', async () => {

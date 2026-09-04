@@ -3,9 +3,11 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { Batch } from '../../batch/entities/batch.entity';
 import { BatchStatus } from '../../batch/batch-status.enum';
+import { NotFoundEntityException, TraceabilityRuleException } from '../../common/errors';
 import { TraceableItem, today } from '../../item/entities/traceable-item.entity';
 import { ItemStatus, blocksSale } from '../../item/item.enums';
 import { QualityInspection } from '../../manufacturing/entities/quality-inspection.entity';
+import { InspectionResult } from '../../manufacturing/manufacturing.enums';
 import { ProductionOrder, ProductionOrderMaterial } from '../../manufacturing/entities/production-order.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
@@ -16,6 +18,90 @@ import {
 } from '../entities/verification-attempt.entity';
 import { EventType } from '../event-type.enum';
 import { EventRecorder } from './event-recorder.service';
+import { Transfer, TransferLine, TransferStatus } from '../../transfer/entities/transfer.entity';
+
+export interface BatchJourneyStageMetrics {
+  totalUnits: number;
+  producedUnits: number;
+  inTransitUnits: number;
+  inStockUnits: number;
+  reservedUnits: number;
+  soldUnits: number;
+  quarantinedUnits: number;
+  damagedUnits: number;
+  destroyedUnits: number;
+  recalledUnits: number;
+  discrepancyUnits: number;
+  verificationScansCount: number;
+}
+
+export interface BatchCustodyNode {
+  organizationId: number | null;
+  organizationName: string;
+  organizationType: string | null;
+  facilityId: number | null;
+  facilityName: string | null;
+  isOrigin: boolean;
+  totalUnits: number;
+  byStatus: Record<string, number>;
+}
+
+export interface BatchTransferReconciliation {
+  transferId: number;
+  reference: string;
+  status: string;
+  sourceOrgId: number;
+  sourceOrgName: string;
+  destinationOrgId: number;
+  destinationOrgName: string;
+  dispatchedCount: number;
+  receivedCount: number;
+  missingCount: number;
+  dispatchedAt: Date | null;
+  receivedAt: Date | null;
+}
+
+export interface BatchMilestoneEvent {
+  title: string;
+  description: string;
+  timestamp: Date | string;
+  type: string;
+  actor?: string | null;
+}
+
+export interface BatchJourneyResponse {
+  batch: {
+    id: number;
+    batchCode: string;
+    status: string;
+    statusReason: string | null;
+    statusChangedAt: Date | null;
+    manufacturedOn: string | null;
+    expiresOn: string | null;
+    productId: number;
+    productName: string;
+    productSku: string;
+    gtin: string | null;
+    manufacturerId: number | null;
+    manufacturerName: string | null;
+    facilityId: number | null;
+    facilityName: string | null;
+  };
+  metrics: BatchJourneyStageMetrics;
+  pipelineProgress: {
+    manufacturedPct: number;
+    dispatchedPct: number;
+    inStockPct: number;
+    soldPct: number;
+    hasDiscrepancy: boolean;
+  };
+  custodyNodes: BatchCustodyNode[];
+  transfers: BatchTransferReconciliation[];
+  inspections: QualityInspectionSummary[];
+  productionOrder: ProductionOrderSummary | null;
+  rawMaterials: RawMaterialSummary[];
+  milestones: BatchMilestoneEvent[];
+}
 
 export interface TimelineEntry {
   eventId: number;
@@ -528,6 +614,384 @@ export class TraceabilityService {
           }
         : null,
       rawMaterials,
+    };
+  }
+
+  /**
+   * Supply chain journey and reconciliation for an entire batch (proposal P0 hero screen).
+   * Aggregates unit state, multi-party custody nodes, transfer discrepancies, QC inspection,
+   * production specs, and consumer verification scans.
+   */
+  async batchJourney(
+    batchId: number,
+    organization: Organization | null,
+  ): Promise<BatchJourneyResponse> {
+    const batch = await this.batches.findOne({
+      where: { id: batchId },
+      relations: ['manufacturer', 'facility', 'product'],
+    });
+    if (!batch) {
+      throw new NotFoundEntityException('Batch', batchId);
+    }
+
+    // 1. Fetch all items in this batch
+    const items = await this.items.find({
+      where: { batch: { id: batchId } },
+      relations: ['holder', 'location', 'product'],
+    });
+
+    const isRegulator = organization?.type === OrganizationType.REGULATOR;
+    const isPlatformAdmin = organization === null;
+
+    // 2. Fetch transfers carrying items from this batch
+    const itemIds = items.map((i) => i.id);
+    let transferLines: TransferLine[] = [];
+    if (itemIds.length > 0) {
+      transferLines = await this.items.manager
+        .getRepository(TransferLine)
+        .createQueryBuilder('line')
+        .innerJoinAndSelect('line.transfer', 'transfer')
+        .leftJoinAndSelect('transfer.sourceOrganization', 'source')
+        .leftJoinAndSelect('transfer.destinationOrganization', 'dest')
+        .leftJoinAndSelect('line.item', 'item')
+        .where('item.id IN (:...itemIds)', { itemIds })
+        .getMany();
+    }
+
+    // Permission scoping check
+    if (organization && !isRegulator && !isPlatformAdmin) {
+      const isManufacturer = batch.manufacturer?.id === organization.id;
+      const isHolder = items.some((item) => item.holder?.id === organization.id);
+      const isTransferParty = transferLines.some(
+        (tl) =>
+          tl.transfer.sourceOrganization?.id === organization.id ||
+          tl.transfer.destinationOrganization?.id === organization.id,
+      );
+      if (!isManufacturer && !isHolder && !isTransferParty) {
+        throw new TraceabilityRuleException(
+          `You do not have permission to view the journey for batch ${batch.batchCode}`,
+        );
+      }
+    }
+
+    // 3. Stage Metrics calculation
+    const totalUnits = items.length;
+    let producedUnits = 0;
+    let inTransitUnits = 0;
+    let inStockUnits = 0;
+    let reservedUnits = 0;
+    let soldUnits = 0;
+    let quarantinedUnits = 0;
+    let damagedUnits = 0;
+    let destroyedUnits = 0;
+    let recalledUnits = 0;
+
+    for (const item of items) {
+      if (item.status !== ItemStatus.CANCELLED) {
+        producedUnits++;
+      }
+      switch (item.status) {
+        case ItemStatus.IN_TRANSIT:
+          inTransitUnits++;
+          break;
+        case ItemStatus.ACTIVE:
+          inStockUnits++;
+          break;
+        case ItemStatus.RESERVED:
+          reservedUnits++;
+          break;
+        case ItemStatus.SOLD:
+          soldUnits++;
+          break;
+        case ItemStatus.QUARANTINED:
+          quarantinedUnits++;
+          break;
+        case ItemStatus.DAMAGED:
+          damagedUnits++;
+          break;
+        case ItemStatus.DESTROYED:
+          destroyedUnits++;
+          break;
+        case ItemStatus.RECALLED:
+          recalledUnits++;
+          break;
+      }
+    }
+
+    // 4. Transfer Reconciliations & Discrepancies
+    const transferMap = new Map<
+      number,
+      {
+        transfer: Transfer;
+        batchItems: TraceableItem[];
+      }
+    >();
+
+    for (const tl of transferLines) {
+      const t = tl.transfer;
+      if (!transferMap.has(t.id)) {
+        transferMap.set(t.id, { transfer: t, batchItems: [] });
+      }
+      transferMap.get(t.id)!.batchItems.push(tl.item);
+    }
+
+    let transferMissingTotal = 0;
+    const transfers: BatchTransferReconciliation[] = [];
+
+    for (const [, { transfer, batchItems }] of transferMap) {
+      const missingList = transfer.missingItems
+        ? transfer.missingItems.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+
+      const batchMissingCount = batchItems.filter((i) => missingList.includes(i.code)).length;
+      transferMissingTotal += batchMissingCount;
+
+      const dispatchedCount = batchItems.length;
+      let receivedCount = 0;
+      if (transfer.status === TransferStatus.RECEIVED) {
+        receivedCount = dispatchedCount;
+      } else if (transfer.status === TransferStatus.PARTIALLY_RECEIVED) {
+        receivedCount = Math.max(0, dispatchedCount - batchMissingCount);
+      }
+
+      transfers.push({
+        transferId: transfer.id,
+        reference: transfer.reference,
+        status: transfer.status,
+        sourceOrgId: transfer.sourceOrganization?.id ?? 0,
+        sourceOrgName: transfer.sourceOrganization?.name ?? 'Unknown',
+        destinationOrgId: transfer.destinationOrganization?.id ?? 0,
+        destinationOrgName: transfer.destinationOrganization?.name ?? 'Unknown',
+        dispatchedCount,
+        receivedCount,
+        missingCount: batchMissingCount,
+        dispatchedAt: transfer.dispatchedAt,
+        receivedAt: transfer.receivedAt ?? null,
+      });
+    }
+
+    transfers.sort(
+      (a, b) =>
+        new Date(b.dispatchedAt || 0).getTime() - new Date(a.dispatchedAt || 0).getTime(),
+    );
+
+    const discrepancyUnits = transferMissingTotal + damagedUnits + quarantinedUnits;
+
+    // 5. Custody distribution nodes
+    const custodyMap = new Map<
+      string,
+      {
+        organizationId: number | null;
+        organizationName: string;
+        organizationType: string | null;
+        facilityId: number | null;
+        facilityName: string | null;
+        isOrigin: boolean;
+        totalUnits: number;
+        byStatus: Record<string, number>;
+      }
+    >();
+
+    for (const item of items) {
+      const orgId = item.holder?.id ?? null;
+      const isOrigin = batch.manufacturer?.id === orgId;
+      const key = `${orgId ?? 'none'}-${item.location?.id ?? 'none'}`;
+
+      if (!custodyMap.has(key)) {
+        custodyMap.set(key, {
+          organizationId: orgId,
+          organizationName:
+            item.holder?.name ?? (isOrigin ? 'Manufacturer Origin' : 'Unassigned / In Transit'),
+          organizationType: item.holder?.type ?? null,
+          facilityId: item.location?.id ?? null,
+          facilityName: item.location?.name ?? null,
+          isOrigin,
+          totalUnits: 0,
+          byStatus: {},
+        });
+      }
+
+      const node = custodyMap.get(key)!;
+      node.totalUnits++;
+      node.byStatus[item.status] = (node.byStatus[item.status] ?? 0) + 1;
+    }
+
+    const custodyNodes = Array.from(custodyMap.values()).sort(
+      (a, b) => b.totalUnits - a.totalUnits,
+    );
+
+    // 6. Consumer verification scans
+    let verificationScansCount = 0;
+    if (itemIds.length > 0) {
+      const countResult = await this.attempts
+        .createQueryBuilder('a')
+        .select('SUM(a.attempts)', 'total')
+        .where('a.item_id IN (:...itemIds)', { itemIds })
+        .getRawOne();
+      verificationScansCount = parseInt(countResult?.total ?? '0', 10) || 0;
+    }
+
+    // 7. QC Inspections & Production Order
+    const inspections = await this.inspections.find({
+      where: { batch: { id: batchId } },
+      relations: ['inspector'],
+      order: { testedAt: 'DESC' },
+    });
+
+    const order = await this.productionOrders.findOne({
+      where: { batch: { id: batchId } },
+      order: { createdAt: 'DESC' },
+    });
+
+    let rawMaterials: RawMaterialSummary[] = [];
+    if (order) {
+      const materials = await this.orderMaterials.find({
+        where: { productionOrder: { id: order.id } },
+        relations: ['material'],
+      });
+
+      rawMaterials = materials.map((m) => ({
+        id: m.material?.id ?? 0,
+        name: m.material?.name ?? 'Unknown',
+        code: m.material?.code ?? '',
+        category: m.material?.category ?? null,
+        unitOfMeasure: m.material?.unitOfMeasure ?? '',
+        allocatedQuantity: m.allocatedQuantity ?? '0',
+        consumedQuantity: m.consumedQuantity ?? '0',
+      }));
+    }
+
+    // 8. Milestones
+    const milestones: BatchMilestoneEvent[] = [];
+    if (batch.manufacturedOn) {
+      milestones.push({
+        title: 'Batch Manufactured',
+        description: `Lot ${batch.batchCode} produced at ${
+          batch.facility?.name ?? batch.manufacturer?.name ?? 'Plant'
+        }`,
+        timestamp: batch.manufacturedOn,
+        type: 'MANUFACTURED',
+      });
+    }
+
+    for (const insp of inspections) {
+      milestones.push({
+        title: `Quality Inspection: ${insp.result}`,
+        description: `Tested by ${insp.inspector?.fullName ?? 'Inspector'}${
+          insp.notes ? ' — ' + insp.notes : ''
+        }`,
+        timestamp: insp.testedAt,
+        type: insp.result === InspectionResult.APPROVED ? 'QC_PASSED' : 'QC_FAILED',
+        actor: insp.inspector?.fullName ?? null,
+      });
+    }
+
+    for (const trf of transfers) {
+      milestones.push({
+        title: `Transfer ${trf.reference}: ${trf.status}`,
+        description: `${trf.sourceOrgName} ➔ ${trf.destinationOrgName} (${
+          trf.dispatchedCount
+        } units${trf.missingCount > 0 ? `, ${trf.missingCount} missing` : ''})`,
+        timestamp: trf.dispatchedAt ?? new Date(),
+        type: trf.missingCount > 0 ? 'DISCREPANCY' : 'DISPATCHED',
+      });
+    }
+
+    if (soldUnits > 0) {
+      milestones.push({
+        title: 'Retail Sales Underway',
+        description: `${soldUnits} units verified and sold to consumers`,
+        timestamp: new Date(),
+        type: 'SOLD',
+      });
+    }
+
+    if (batch.status === BatchStatus.RECALLED) {
+      milestones.push({
+        title: 'Batch Recalled',
+        description: batch.statusReason ?? 'Regulatory or quality recall initiated',
+        timestamp: batch.statusChangedAt ?? new Date(),
+        type: 'RECALLED',
+      });
+    }
+
+    milestones.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
+    );
+
+    // 9. Pipeline Progress
+    const baseTotal = totalUnits || 1;
+    const manufacturedPct = 100;
+    const dispatchedPct = Math.min(
+      100,
+      Math.round(
+        ((inTransitUnits + inStockUnits + soldUnits + recalledUnits) / baseTotal) * 100,
+      ),
+    );
+    const inStockPct = Math.min(100, Math.round(((inStockUnits + soldUnits) / baseTotal) * 100));
+    const soldPct = Math.min(100, Math.round((soldUnits / baseTotal) * 100));
+
+    return {
+      batch: {
+        id: batch.id,
+        batchCode: batch.batchCode,
+        status: batch.status,
+        statusReason: batch.statusReason,
+        statusChangedAt: batch.statusChangedAt,
+        manufacturedOn: batch.manufacturedOn,
+        expiresOn: batch.expiresOn,
+        productId: batch.product.id,
+        productName: batch.product.name,
+        productSku: batch.product.sku,
+        gtin: batch.product.gtin,
+        manufacturerId: batch.manufacturer?.id ?? null,
+        manufacturerName: batch.manufacturer?.name ?? null,
+        facilityId: batch.facilityId ?? null,
+        facilityName: batch.facility?.name ?? null,
+      },
+      metrics: {
+        totalUnits,
+        producedUnits,
+        inTransitUnits,
+        inStockUnits,
+        reservedUnits,
+        soldUnits,
+        quarantinedUnits,
+        damagedUnits,
+        destroyedUnits,
+        recalledUnits,
+        discrepancyUnits,
+        verificationScansCount,
+      },
+      pipelineProgress: {
+        manufacturedPct,
+        dispatchedPct,
+        inStockPct,
+        soldPct,
+        hasDiscrepancy: discrepancyUnits > 0,
+      },
+      custodyNodes,
+      transfers,
+      inspections: inspections.map((i) => ({
+        id: i.id,
+        result: i.result,
+        inspector: i.inspector?.fullName ?? 'Unknown',
+        notes: i.notes,
+        testedAt: i.testedAt,
+      })),
+      productionOrder: order
+        ? {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            plannedQuantity: order.plannedQuantity,
+            producedQuantity: order.producedQuantity,
+            status: order.status,
+            startedAt: order.startedAt,
+            completedAt: order.completedAt,
+          }
+        : null,
+      rawMaterials,
+      milestones,
     };
   }
 

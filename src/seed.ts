@@ -7,6 +7,7 @@ import { User } from './auth/entities/user.entity';
 import { UserRole } from './auth/user-role.enum';
 import { Organization } from './organization/entities/organization.entity';
 import { OrganizationType } from './organization/organization-type.enum';
+import { OnboardingStatus } from './organization/onboarding-status.enum';
 import { Product } from './product/entities/product.entity';
 import { ProductCategory } from './product/entities/product-category.entity';
 import { Location } from './location/entities/location.entity';
@@ -55,7 +56,13 @@ async function seed() {
   const orgs: Record<string, Organization> = {};
   for (const def of orgDefs) {
     if (!(await exists(orgRepo, { name: def.name }))) {
-      const org = orgRepo.create({ name: def.name, type: def.type });
+      const org = orgRepo.create({
+        name: def.name,
+        type: def.type,
+        // Seeded organizations are already-approved demo businesses with
+        // licences; only real self-registrations go through the review queue.
+        onboardingStatus: OnboardingStatus.APPROVED,
+      });
       await orgRepo.save(org);
       console.log(`  Created org: ${def.name}`);
     }

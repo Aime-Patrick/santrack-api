@@ -7,6 +7,16 @@ import { Batch } from '../batch/entities/batch.entity';
 import { CodeSequence } from '../item/entities/code-sequence.entity';
 import { ComplianceFinding } from '../licensing/entities/compliance-finding.entity';
 import {
+  RegulatoryCase,
+  RegulatoryCaseEvent,
+  RegulatoryCaseEvidence,
+  RegulatoryCaseReferral,
+} from '../licensing/entities/regulatory-case.entity';
+import { RegulatoryInspection } from '../licensing/entities/regulatory-inspection.entity';
+import { PublicComplaint } from '../licensing/entities/public-complaint.entity';
+import { RegulatoryAuthority } from '../licensing/entities/regulatory-authority.entity';
+import { RegulatoryOversightScope } from '../licensing/entities/regulatory-oversight.entity';
+import {
   License,
   LicenseCategory,
   LicenseDocument,
@@ -18,6 +28,8 @@ import { TraceableItem } from '../item/entities/traceable-item.entity';
 import { Location } from '../location/entities/location.entity';
 import { Facility } from '../organization/entities/facility.entity';
 import { Organization } from '../organization/entities/organization.entity';
+import { OrganizationDocument } from '../organization/entities/organization-document.entity';
+import { OrganizationOwner } from '../organization/entities/organization-owner.entity';
 import { Product } from '../product/entities/product.entity';
 import { Brand } from '../product/entities/brand.entity';
 import { ProductCategory } from '../product/entities/product-category.entity';
@@ -80,6 +92,8 @@ export const ENTITIES = [
   User,
   Facility,
   Organization,
+  OrganizationDocument,
+  OrganizationOwner,
   Location,
   Product,
   ProductCategory,
@@ -100,6 +114,14 @@ export const ENTITIES = [
   LicenseDocument,
   LicenseEvent,
   ComplianceFinding,
+  RegulatoryCase,
+  RegulatoryCaseEvent,
+  RegulatoryCaseEvidence,
+  RegulatoryCaseReferral,
+  RegulatoryInspection,
+  PublicComplaint,
+  RegulatoryAuthority,
+  RegulatoryOversightScope,
   ProductionEligibilityDecision,
   RawMaterial,
   BillOfMaterial,

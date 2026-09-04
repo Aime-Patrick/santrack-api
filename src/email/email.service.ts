@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { EmailProvider, SendEmailOptions } from './providers/email-provider.interface';
-import { SmtpProvider } from './providers/smtp.provider';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
+import { SendEmailOptions } from './providers/email-provider.interface';
+import { EmailProviderFactory } from './email-provider.factory';
 import { UserRole } from '../auth/user-role.enum';
 
 const ROLE_LABELS: Record<UserRole, string> = {
@@ -19,36 +20,36 @@ const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 @Injectable()
-export class EmailService implements OnModuleInit {
+export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private provider!: EmailProvider;
 
-  constructor(private readonly config: ConfigService) {}
-
-  onModuleInit() {
-    const providerType = this.config.get<string>('email.provider') ?? 'smtp';
-
-    if (providerType === 'smtp') {
-      this.provider = new SmtpProvider({
-        host: this.config.getOrThrow<string>('email.smtpHost'),
-        port: this.config.getOrThrow<number>('email.smtpPort'),
-        user: this.config.get<string>('email.smtpUser') ?? '',
-        pass: this.config.get<string>('email.smtpPass') ?? '',
-        from: this.config.getOrThrow<string>('email.from'),
-      });
-      this.logger.log('Email provider: SMTP');
-    } else {
-      throw new Error(`Unknown email provider: ${providerType}`);
-    }
-  }
+  constructor(
+    @InjectQueue('email') private readonly emailQueue: Queue,
+    private readonly providerFactory: EmailProviderFactory,
+  ) {}
 
   async send(options: SendEmailOptions): Promise<void> {
     try {
-      await this.provider.send(options);
-      this.logger.log(`Email sent to ${options.to}: ${options.subject}`);
+      await this.emailQueue.add('send-email', options, {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: true,
+        removeOnFail: false,
+      });
+      this.logger.log(`Enqueued email job for ${options.to}: ${options.subject}`);
     } catch (error) {
-      this.logger.error(`Failed to send email to ${options.to}:`, error);
-      throw error;
+      this.logger.warn(`Failed to enqueue email to Redis queue, falling back to direct send: ${(error as Error).message}`);
+      try {
+        const provider = this.providerFactory.getProvider();
+        await provider.send(options);
+        this.logger.log(`Directly delivered email to ${options.to}: ${options.subject}`);
+      } catch (sendErr) {
+        this.logger.error(`Failed direct email delivery to ${options.to}:`, sendErr);
+        throw sendErr;
+      }
     }
   }
 
@@ -154,6 +155,57 @@ export class EmailService implements OnModuleInit {
         temporaryPassword: input.temporaryPassword,
         resetBy: input.resetBy,
         loginUrl: input.loginUrl,
+      },
+    });
+  }
+
+  // ── Registration lifecycle emails ──
+
+  async sendRegistrationSubmitted(params: {
+    to: string;
+    companyName: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: 'Registration received — SANTRACK',
+      template: 'registration-submitted',
+      data: {
+        title: 'Registration received',
+        companyName: params.companyName,
+      },
+    });
+  }
+
+  async sendRegistrationApproved(params: {
+    to: string;
+    companyName: string;
+    loginUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: 'Registration approved — SANTRACK',
+      template: 'registration-approved',
+      data: {
+        title: 'Registration approved',
+        companyName: params.companyName,
+        loginUrl: params.loginUrl,
+      },
+    });
+  }
+
+  async sendRegistrationRejected(params: {
+    to: string;
+    companyName: string;
+    reason: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: 'Registration requires attention — SANTRACK',
+      template: 'registration-rejected',
+      data: {
+        title: 'Registration requires attention',
+        companyName: params.companyName,
+        reason: params.reason,
       },
     });
   }

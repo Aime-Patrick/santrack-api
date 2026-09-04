@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability, capabilitiesFor } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
@@ -38,16 +38,25 @@ export class TraceController {
   ) {}
 
   /**
-   * Everything known about one identity, and everything that can be done to it.
-   *
-   * This is the working screen, not a report. An operator arrives here by
-   * scanning the thing in front of them, so the answer carries the whole
-   * picture in one response - what it is, what it came from, what is inside it,
-   * what container it is inside, where it has been, and which operations are
-   * open to this caller right now. Splitting that across a trace page, an
-   * inventory page and four operation pages meant re-entering a code that had
-   * just been scanned, which is how the wrong pallet gets dispatched.
+   * Supply chain journey and reconciliation for an entire batch (proposal P0 hero screen).
+   * Aggregates unit state, multi-party custody nodes, transfer discrepancies, QC inspection,
+   * production specs, and consumer verification scans.
    */
+  @Get('batch/:batchId/journey')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async batchJourney(
+    @OptionalActingOrg() organization: Organization | null,
+    @CurrentUser() actor: User,
+    @Param('batchId', ParseIntPipe) batchId: number,
+  ) {
+    const isPlatformOperator = actor.role === UserRole.SYSTEM_ADMIN;
+    if (!organization && !isPlatformOperator) {
+      throw new OrganizationRequiredException();
+    }
+
+    return this.traceability.batchJourney(batchId, organization);
+  }
+
   /**
    * Codes being scanned far more often than one physical thing could be.
    *

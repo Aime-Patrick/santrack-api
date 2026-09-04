@@ -12,7 +12,7 @@ import { Capability } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
 import { ActingOrg, CurrentUser, RequireCapability } from '../../common/decorators';
 import { Organization } from '../../organization/entities/organization.entity';
-import { LiftRecallDto, RecallDto } from '../dto/recall.dto';
+import { LiftRecallDto, RecallDto, RecallRecoveryDto } from '../dto/recall.dto';
 import { RecallService } from '../services/recall.service';
 
 @ApiTags('Recalls')
@@ -44,6 +44,13 @@ export class RecallController {
     @Body() dto: RecallDto,
   ) {
     return this.recalls.recallBatch(organization, actor, dto);
+  }
+
+  @Post('recovery')
+  @HttpCode(200)
+  @RequireCapability(Capability.APPLY_LIFECYCLE)
+  async recover(@ActingOrg() organization: Organization, @CurrentUser() actor: User, @Body() dto: RecallRecoveryDto) {
+    return this.recalls.recordRecovery(organization, actor, dto);
   }
 
   @Post('batches/:batchId/lift')

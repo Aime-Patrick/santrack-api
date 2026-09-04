@@ -169,7 +169,29 @@ import {
 } from './licensing/controllers/license.controller';
 import { ProductionEligibilityController } from './licensing/controllers/production-eligibility.controller';
 import { ComplianceOverviewController } from './licensing/controllers/compliance-overview.controller';
+import { RegulatoryCaseController } from './licensing/controllers/regulatory-case.controller';
+import { RegulatoryCaseResponseController } from './licensing/controllers/regulatory-case-response.controller';
+import { RegulatoryInspectionController } from './licensing/controllers/regulatory-inspection.controller';
+import { PublicComplaintController } from './licensing/controllers/public-complaint.controller';
+import { RegulatoryComplaintController } from './licensing/controllers/regulatory-complaint.controller';
+import { RegulatorySignalController } from './licensing/controllers/regulatory-signal.controller';
+import { RegulatoryCommandController } from './licensing/controllers/regulatory-command.controller';
+import { RegulatoryAuthorityController } from './licensing/controllers/regulatory-authority.controller';
+import { RegulatoryAccountabilityController } from './licensing/controllers/regulatory-accountability.controller';
+import { RegulatoryAccountabilityService } from './licensing/services/regulatory-accountability.service';
+import { RegulatoryReferralController } from './licensing/controllers/regulatory-referral.controller';
+import { RegulatoryOversightController } from './licensing/controllers/regulatory-oversight.controller';
 import { LicenseService } from './licensing/services/license.service';
+import { RegulatoryCaseService } from './licensing/services/regulatory-case.service';
+import { RegulatoryCaseDeadlineService } from './licensing/services/regulatory-case-deadline.service';
+import { RegulatoryInvestigationPackService } from './licensing/services/regulatory-investigation-pack.service';
+import { RegulatoryInspectionService } from './licensing/services/regulatory-inspection.service';
+import { PublicComplaintService } from './licensing/services/public-complaint.service';
+import { RegulatorySignalService } from './licensing/services/regulatory-signal.service';
+import { RegulatoryCommandService } from './licensing/services/regulatory-command.service';
+import { RegulatoryAuthorityService } from './licensing/services/regulatory-authority.service';
+import { RegulatoryOversightService } from './licensing/services/regulatory-oversight.service';
+import { RegulatoryAuthority } from './licensing/entities/regulatory-authority.entity';
 import { SequenceService } from './common/sequence.service';
 import { StorageModule } from './storage/storage.module';
 import { BarcodeController } from './barcode/barcode.controller';
@@ -298,6 +320,17 @@ import { SearchService } from './search/search.service';
     LicenseReviewController,
     ProductionEligibilityController,
     ComplianceOverviewController,
+    RegulatoryCaseController,
+    RegulatoryCaseResponseController,
+    RegulatoryInspectionController,
+    PublicComplaintController,
+    RegulatoryComplaintController,
+    RegulatorySignalController,
+    RegulatoryCommandController,
+    RegulatoryAuthorityController,
+    RegulatoryAccountabilityController,
+    RegulatoryReferralController,
+    RegulatoryOversightController,
     RawMaterialController,
     BomController,
     MachineController,
@@ -373,6 +406,16 @@ import { SearchService } from './search/search.service';
     DashboardService,
     SequenceService,
     LicenseService,
+    RegulatoryCaseService,
+    RegulatoryCaseDeadlineService,
+    RegulatoryInvestigationPackService,
+    RegulatoryInspectionService,
+    PublicComplaintService,
+    RegulatorySignalService,
+    RegulatoryCommandService,
+    RegulatoryAuthorityService,
+    RegulatoryAccountabilityService,
+    RegulatoryOversightService,
     LicenseEnforcementService,
     ProductionEligibilityService,
     ComplianceOverviewService,
@@ -411,4 +454,4 @@ import { SearchService } from './search/search.service';
 })
 export class AppModule {}
 
-export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog };
+export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog, RegulatoryAuthority };
