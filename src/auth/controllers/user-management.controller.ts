@@ -16,6 +16,7 @@ import { User } from '../entities/user.entity';
 import {
   CreateUserDto,
   ResetPasswordDto,
+  SetUserCapabilitiesDto,
   UpdateUserDto,
 } from '../dto/user-management.dto';
 import { UserManagementService } from '../services/user-management.service';
@@ -74,6 +75,21 @@ export class UserController {
     @Body() dto: UpdateUserDto,
   ) {
     return this.userMgmt.update(actor, id, dto);
+  }
+
+  /**
+   * Grant or revoke a user's individually assigned capabilities (Add
+   * Industry). Platform-operator only: this is done to the platform, not
+   * inside one business, so no org admin can ever call it.
+   */
+  @Patch(':id/capabilities')
+  @RequireCapability(Capability.ADMINISTER_PLATFORM)
+  async setCapabilities(
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SetUserCapabilitiesDto,
+  ) {
+    return this.userMgmt.setCapabilities(actor, id, dto);
   }
 
   /** Reset a user's password. */

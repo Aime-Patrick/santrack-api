@@ -1,4 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { createHash, randomBytes } from 'crypto';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -11,7 +13,13 @@ import {
 } from '../../common/errors';
 import { Organization } from '../../organization/entities/organization.entity';
 import { ChangePasswordDto } from '../dto/user-management.dto';
-import { LoginDto, RegisterDto } from '../dto/auth.dto';
+import {
+  LoginDto,
+  RegisterDto,
+  RequestPasswordResetDto,
+  ResetPasswordDto,
+} from '../dto/auth.dto';
+import { EmailService } from '../../email/email.service';
 import {
   CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE,
   CAPABILITY_DESCRIPTIONS,
@@ -57,11 +65,22 @@ export interface CapabilityCatalogue {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+  private readonly appPublicUrl: string;
+
   constructor(
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly jwt: JwtService,
-  ) {}
+    private readonly email: EmailService,
+    config: ConfigService,
+  ) {
+    this.appPublicUrl = (
+      config.get<string>('appPublicUrl') ??
+      (config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'])[0] ??
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
+  }
 
   /**
    * Creates an account. The first user of an organization becomes its admin
@@ -159,6 +178,76 @@ export class AuthService {
   }
 
   /**
+   * Starts a self-service password reset.
+   *
+   * Always answers success - whether or not the email is registered - so the
+   * endpoint cannot be used to discover which addresses have accounts. When
+   * the account exists, a single-use token (1h expiry, stored as its SHA-256)
+   * is created and emailed; a delivery failure is logged, never surfaced,
+   * because the caller must not learn anything from it either.
+   */
+  async requestPasswordReset(dto: RequestPasswordResetDto): Promise<{ success: true }> {
+    const email = dto.email.trim().toLowerCase();
+    const user = await this.users.findOne({ where: { email } });
+
+    if (user) {
+      const token = randomBytes(32).toString('hex');
+      user.passwordResetToken = this.hashResetToken(token);
+      user.passwordResetExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+      await this.users.save(user);
+
+      void this.email
+        .sendForgotPasswordEmail(email, token, this.appPublicUrl)
+        .catch((error: Error) =>
+          this.logger.warn(
+            `Password reset email to ${email} failed: ${error.message}`,
+          ),
+        );
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * Consumes the emailed token and sets a new password. One use only: the
+   * token is nulled on success, so a replay of the same link fails.
+   */
+  async resetPassword(dto: ResetPasswordDto): Promise<{ success: true }> {
+    const user = await this.users.findOne({
+      where: { passwordResetToken: this.hashResetToken(dto.token) },
+      select: {
+        id: true,
+        passwordResetToken: true,
+        passwordResetExpiresAt: true,
+        passwordHash: true,
+        mustChangePassword: true,
+      },
+    });
+
+    if (
+      !user ||
+      !user.passwordResetExpiresAt ||
+      user.passwordResetExpiresAt.getTime() <= Date.now()
+    ) {
+      throw new TraceabilityRuleException(
+        'This reset link is invalid or has expired. Request a new one.',
+      );
+    }
+
+    user.passwordHash = await hash(dto.newPassword, 10);
+    user.mustChangePassword = false;
+    user.passwordResetToken = null;
+    user.passwordResetExpiresAt = null;
+    await this.users.save(user);
+
+    return { success: true };
+  }
+
+  private hashResetToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
    * The reference table behind the Roles screen: every capability the platform
    * defines, what each one means, and which roles hold it.
    *
@@ -207,7 +296,11 @@ export class AuthService {
           }
         : null,
       mustChangePassword: !!user.mustChangePassword,
-      capabilities: capabilitiesFor(user.role, user.organization?.type),
+      capabilities: capabilitiesFor(
+        user.role,
+        user.organization?.type,
+        (user.extraCapabilities ?? []) as Capability[],
+      ),
     };
   }
 }

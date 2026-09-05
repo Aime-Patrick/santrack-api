@@ -29,6 +29,54 @@ export class RegulatoryAccountabilityController {
     return this.accountability.organizationTimeline(orgId, Math.min(Number(limit) || 50, 100));
   }
 
+  @Get('case/:caseId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async caseTimeline(
+    @Param('caseId', ParseIntPipe) caseId: number,
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    return this.accountability.caseTimeline(caseId, Math.min(Number(limit) || 50, 100));
+  }
+
+  @Get('facility/:facilityId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async facilityTimeline(
+    @Param('facilityId', ParseIntPipe) facilityId: number,
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    return this.accountability.facilityTimeline(facilityId, Math.min(Number(limit) || 50, 100));
+  }
+
+  @Get('licence/:licenceId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async licenceTimeline(
+    @Param('licenceId', ParseIntPipe) licenceId: number,
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    return this.accountability.licenceTimeline(licenceId, Math.min(Number(limit) || 50, 100));
+  }
+
+  @Get('product/:productId')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async productTimeline(
+    @Param('productId', ParseIntPipe) productId: number,
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    return this.accountability.productTimeline(productId, Math.min(Number(limit) || 50, 100));
+  }
+
   @Get('batch/:batchId')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async batchTimeline(

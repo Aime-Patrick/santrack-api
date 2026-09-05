@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsEmail,
   IsEnum,
@@ -8,6 +9,7 @@ import {
   MinLength,
   ValidateIf,
 } from 'class-validator';
+import { Capability } from '../capabilities';
 import { UserRole } from '../user-role.enum';
 
 export class CreateUserDto {
@@ -66,4 +68,20 @@ export class ChangePasswordDto {
   @IsString()
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   newPassword: string;
+}
+
+/**
+ * The capabilities to grant a user, replacing whatever was granted before.
+ *
+ * Only DYNAMICALLY_GRANTABLE_CAPABILITIES (currently MANAGE_INDUSTRIES) are
+ * accepted; the service rejects anything else so a typo cannot accidentally
+ * confer a role-only capability.
+ */
+export class SetUserCapabilitiesDto {
+  @IsArray({ message: 'capabilities must be an array' })
+  @IsEnum(Capability, {
+    each: true,
+    message: 'A valid capability is required',
+  })
+  capabilities: Capability[];
 }

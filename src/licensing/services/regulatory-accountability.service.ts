@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
 import { RegulatoryCaseEvent } from '../entities/regulatory-case.entity';
+import { RegulatoryInspection, RegulatoryInspectionResult } from '../entities/regulatory-inspection.entity';
 import { LicenseEvent } from '../entities/license.entity';
 import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
 
@@ -144,7 +145,18 @@ export class RegulatoryAccountabilityService {
       });
     }
 
-    // 5. Consumer reports against this manufacturer's batches. A report is a
+    // 5. Field inspections of this business (regulator decisions, not factory QC)
+    const inspections = await this.dataSource
+      .getRepository(RegulatoryInspection)
+      .createQueryBuilder('i')
+      .leftJoinAndSelect('i.inspector', 'inspector')
+      .where('i.organization_id = :orgId', { orgId: organizationId })
+      .orderBy('i.inspected_at', 'DESC')
+      .take(limit)
+      .getMany();
+    pushInspectionEntries(entries, inspections);
+
+    // 6. Consumer reports against this manufacturer's batches. A report is a
     // market signal the regulator has to answer for, so it belongs on the
     // business's ledger as much as an inspection does.
     const complaints = await this.dataSource.query(
@@ -160,6 +172,167 @@ export class RegulatoryAccountabilityService {
     pushComplaintEntries(entries, complaints);
 
     // Sort all entries by time (newest first) and trim to limit
+    entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Accountability timeline for a case: its own event history plus the field
+   * inspections recorded against it.
+   */
+  async caseTimeline(caseId: number, limit = 50): Promise<AccountabilityEntry[]> {
+    const entries: AccountabilityEntry[] = [];
+    const caseEvents = await this.dataSource
+      .getRepository(RegulatoryCaseEvent)
+      .createQueryBuilder('e')
+      .innerJoin('e.case', 'c')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .where('c.id = :caseId', { caseId })
+      .orderBy('e.recorded_at', 'DESC')
+      .take(limit)
+      .getMany();
+    pushCaseEntries(entries, caseEvents);
+    await pushInspectionsByCondition(entries, this.dataSource, 'i.case_id = :caseId', { caseId }, limit);
+
+    entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Accountability timeline for a facility: every case opened against it and
+   * every field inspection of it. Licence and product activity on the facility's
+   * business is covered by the organization timeline.
+   */
+  async facilityTimeline(facilityId: number, limit = 50): Promise<AccountabilityEntry[]> {
+    const entries: AccountabilityEntry[] = [];
+    const caseEvents = await this.dataSource
+      .getRepository(RegulatoryCaseEvent)
+      .createQueryBuilder('e')
+      .innerJoin('e.case', 'c')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .where('c.facility_id = :facilityId', { facilityId })
+      .orderBy('e.recorded_at', 'DESC')
+      .take(limit)
+      .getMany();
+    pushCaseEntries(entries, caseEvents);
+    await pushInspectionsByCondition(entries, this.dataSource, 'i.facility_id = :facilityId', { facilityId }, limit);
+
+    entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Accountability timeline for a licence: the licence's decision history plus
+   * every regulatory case raised against it.
+   */
+  async licenceTimeline(licenceId: number, limit = 50): Promise<AccountabilityEntry[]> {
+    const entries: AccountabilityEntry[] = [];
+    const licenseEvents = await this.dataSource
+      .getRepository(LicenseEvent)
+      .createQueryBuilder('le')
+      .innerJoin('le.license', 'l')
+      .leftJoinAndSelect('le.actor', 'actor')
+      .where('l.id = :licenceId', { licenceId })
+      .orderBy('le.recorded_at', 'DESC')
+      .take(limit)
+      .getMany();
+
+    for (const evt of licenseEvents) {
+      entries.push({
+        id: evt.id,
+        source: 'LICENSE',
+        type: evt.type,
+        summary: buildLicenseSummary(evt),
+        detail: { fromStatus: evt.fromStatus, toStatus: evt.toStatus, notes: evt.notes },
+        actor: evt.actor?.fullName ?? evt.actor?.email ?? null,
+        actorEmail: evt.actor?.email ?? null,
+        organization: null,
+        recordedAt: evt.recordedAt,
+      });
+    }
+
+    const caseEvents = await this.dataSource
+      .getRepository(RegulatoryCaseEvent)
+      .createQueryBuilder('e')
+      .innerJoin('e.case', 'c')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .where('c.license_id = :licenceId', { licenceId })
+      .orderBy('e.recorded_at', 'DESC')
+      .take(limit)
+      .getMany();
+    pushCaseEntries(entries, caseEvents);
+
+    entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return entries.slice(0, limit);
+  }
+
+  /**
+   * Accountability timeline for a product: every event across all of its
+   * batches — manufacture, dispatch, receipt, sale, complaints, cases, and
+   * field inspections.
+   */
+  async productTimeline(productId: number, limit = 50): Promise<AccountabilityEntry[]> {
+    const entries: AccountabilityEntry[] = [];
+    const batchRows = await this.dataSource.query<{ id: number }[]>(
+      `SELECT id FROM batches WHERE product_id = $1`,
+      [productId],
+    );
+    const batchIds = batchRows.map((row) => row.id);
+    if (batchIds.length === 0) return entries;
+
+    // Case events on cases raised against any of these batches
+    const caseEvents = await this.dataSource
+      .getRepository(RegulatoryCaseEvent)
+      .createQueryBuilder('e')
+      .innerJoin('e.case', 'c')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .where('c.batch_id IN (:...batchIds)', { batchIds })
+      .orderBy('e.recorded_at', 'DESC')
+      .take(limit)
+      .getMany();
+    pushCaseEntries(entries, caseEvents);
+
+    // Traceability events for any of these batches (including per-item events)
+    const traceEvents = await this.dataSource
+      .getRepository(TraceabilityEvent)
+      .createQueryBuilder('te')
+      .leftJoinAndSelect('te.actor', 'actor')
+      .leftJoinAndSelect('te.sourceOrganization', 'org')
+      .leftJoin('te.item', 'item')
+      .where('te.batch_id IN (:...batchIds) OR (item.id IS NOT NULL AND item.batch_id IN (:...batchIds))', { batchIds })
+      .orderBy('te.occurred_at', 'DESC')
+      .take(limit)
+      .getMany();
+
+    for (const evt of traceEvents) {
+      entries.push({
+        id: evt.id,
+        source: 'TRACEABILITY',
+        type: evt.type,
+        summary: buildTraceSummary(evt),
+        detail: { quantity: evt.quantity, notes: evt.notes },
+        actor: evt.actor?.fullName ?? evt.actor?.email ?? null,
+        actorEmail: evt.actor?.email ?? null,
+        organization: evt.sourceOrganization?.name ?? null,
+        recordedAt: evt.occurredAt,
+      });
+    }
+
+    // Consumer reports against any of these batches
+    const complaints = await this.dataSource.query(
+      `SELECT pc.id, pc.issue, pc.status, pc.note, pc.location_hint,
+              pc.reviewed_at, pc.received_at
+       FROM public_complaints pc
+       WHERE pc.batch_id = ANY($1)
+       ORDER BY pc.received_at DESC
+       LIMIT $2`,
+      [batchIds, limit],
+    );
+    pushComplaintEntries(entries, complaints);
+
+    // Field inspections recorded on cases raised against these batches
+    await pushInspectionsByCondition(entries, this.dataSource, 'c.batch_id IN (:...batchIds)', { batchIds }, limit);
+
     entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
     return entries.slice(0, limit);
   }
@@ -234,8 +407,87 @@ export class RegulatoryAccountabilityService {
     );
     pushComplaintEntries(entries, complaints);
 
+    // Field inspections recorded on cases raised against this batch
+    await pushInspectionsByCondition(entries, this.dataSource, 'c.batch_id = :batchId', { batchId }, limit);
+
     entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
     return entries.slice(0, limit);
+  }
+}
+
+/** Maps regulatory case events onto shared ledger entries. */
+function pushCaseEntries(
+  entries: AccountabilityEntry[],
+  events: RegulatoryCaseEvent[],
+): void {
+  for (const evt of events) {
+    entries.push({
+      id: evt.id,
+      source: 'CASE',
+      type: evt.type,
+      summary: evt.summary,
+      detail: evt.detail as Record<string, unknown> | null,
+      actor: evt.actor?.fullName ?? evt.actor?.email ?? null,
+      actorEmail: evt.actor?.email ?? null,
+      organization: null,
+      recordedAt: evt.recordedAt,
+    });
+  }
+}
+
+/**
+ * Maps field inspections onto shared ledger entries. A PASS/CONDITIONAL/FAIL
+ * verdict is the officer's decision, so the verdict is the entry type.
+ */
+function pushInspectionEntries(
+  entries: AccountabilityEntry[],
+  inspections: RegulatoryInspection[],
+): void {
+  for (const inspection of inspections) {
+    entries.push({
+      id: inspection.id,
+      source: 'INSPECTION',
+      type: inspection.result,
+      summary: buildInspectionSummary(inspection),
+      detail: inspection.notes ? { notes: inspection.notes } : null,
+      actor: inspection.inspector?.fullName ?? inspection.inspector?.email ?? null,
+      actorEmail: inspection.inspector?.email ?? null,
+      organization: null,
+      recordedAt: inspection.inspectedAt,
+    });
+  }
+}
+
+/** Loads inspections by an arbitrary column condition (case, facility, or batch). */
+async function pushInspectionsByCondition(
+  entries: AccountabilityEntry[],
+  dataSource: DataSource,
+  where: string,
+  params: Record<string, number | number[]>,
+  limit: number,
+): Promise<void> {
+  const inspections = await dataSource
+    .getRepository(RegulatoryInspection)
+    .createQueryBuilder('i')
+    .innerJoin('i.case', 'c')
+    .leftJoinAndSelect('i.inspector', 'inspector')
+    .where(where, params)
+    .orderBy('i.inspected_at', 'DESC')
+    .take(limit)
+    .getMany();
+  pushInspectionEntries(entries, inspections);
+}
+
+function buildInspectionSummary(inspection: RegulatoryInspection): string {
+  switch (inspection.result) {
+    case RegulatoryInspectionResult.PASS:
+      return 'Field inspection passed';
+    case RegulatoryInspectionResult.CONDITIONAL:
+      return 'Field inspection passed with conditions';
+    case RegulatoryInspectionResult.FAIL:
+      return 'Field inspection failed — corrective action required';
+    default:
+      return `Field inspection ${String(inspection.result).toLowerCase()}`;
   }
 }
 

@@ -32,7 +32,8 @@ describe('role capabilities (proposal section 12)', () => {
   });
 
   it('gives the platform operator oversight without operational tools', () => {
-    // SAN TECH administers the registry and can open Trace for investigation.
+    // SAN TECH administers the registry, writes to it (Add Industry) and can
+    // read the whole platform's audit log and open Trace for investigation.
     // They do not run a factory floor, warehouse, or payroll.
     expect(ROLE_CAPABILITIES[UserRole.SYSTEM_ADMIN].sort()).toEqual(
       [
@@ -40,6 +41,8 @@ describe('role capabilities (proposal section 12)', () => {
         Capability.MANAGE_USERS,
         Capability.OVERSEE_INDUSTRIES,
         Capability.ADMINISTER_PLATFORM,
+        Capability.MANAGE_INDUSTRIES,
+        Capability.READ_AUDIT,
       ].sort(),
     );
     expect(can(UserRole.SYSTEM_ADMIN, Capability.REGISTER_IDENTITY)).toBe(false);
@@ -49,6 +52,18 @@ describe('role capabilities (proposal section 12)', () => {
     expect(can(UserRole.SYSTEM_ADMIN, Capability.MANAGE_FINANCE)).toBe(false);
     expect(can(UserRole.SYSTEM_ADMIN, Capability.VIEW_OPERATIONS)).toBe(true);
     expect(can(UserRole.SYSTEM_ADMIN, Capability.ADMINISTER_PLATFORM)).toBe(true);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.MANAGE_INDUSTRIES)).toBe(true);
+    expect(can(UserRole.SYSTEM_ADMIN, Capability.READ_AUDIT)).toBe(true);
+  });
+
+  it('gives no business role a registry write by default', () => {
+    // Add Industry is operator-only unless the operator grants it to a
+    // specific officer. A manufacturer's admin, a warehouse manager, an
+    // auditor - none of them may create registry entries on title alone.
+    for (const role of Object.values(UserRole)) {
+      if (role === UserRole.SYSTEM_ADMIN) continue;
+      expect(can(role, Capability.MANAGE_INDUSTRIES)).toBe(false);
+    }
   });
 
   it('gives read-only roles no write capability at all', () => {
@@ -209,12 +224,49 @@ describe('capabilities conferred by regulatory standing', () => {
   });
 
   it('confers no write capability a role does not already hold', () => {
-    // Standing widens what you can see, never what you can do.
+    // Standing widens what you can see, never what you can do. It adds the
+    // industry registry and the platform audit log - both reads.
     const auditorAtRegulator = capabilitiesFor(UserRole.AUDITOR, OrganizationType.REGULATOR);
     expect(auditorAtRegulator).toEqual([
       Capability.VIEW_OPERATIONS,
       Capability.OVERSEE_INDUSTRIES,
+      Capability.READ_AUDIT,
     ]);
+  });
+
+  it('gives a licensing authority the platform audit log but no registry write', () => {
+    // The regulator reads who did what across the platform, but does not
+    // create registry entries - that stays with the operator unless a
+    // specific officer is granted it.
+    const regulatorAdmin = capabilitiesFor(
+      UserRole.ORG_ADMIN,
+      OrganizationType.REGULATOR,
+    );
+    expect(regulatorAdmin).toContain(Capability.READ_AUDIT);
+    expect(regulatorAdmin).not.toContain(Capability.MANAGE_INDUSTRIES);
+  });
+
+  it('merges per-user grants outside the organization ceiling', () => {
+    // A grant from the operator is an explicit exception for a named officer:
+    // the grant survives the ceiling that would otherwise strip it.
+    const granted = capabilitiesFor(
+      UserRole.AUDITOR,
+      OrganizationType.MANUFACTURER,
+      [Capability.MANAGE_INDUSTRIES],
+    );
+    expect(granted).toContain(Capability.MANAGE_INDUSTRIES);
+    expect(granted).toContain(Capability.VIEW_OPERATIONS);
+  });
+
+  it('resolves the same list with grants regardless of how the question is asked', () => {
+    const grants = [Capability.MANAGE_INDUSTRIES];
+    for (const role of Object.values(UserRole)) {
+      expect(userCan({ role, organization: regulator, extraCapabilities: grants }, Capability.MANAGE_INDUSTRIES)).toBe(
+        capabilitiesFor(role, OrganizationType.REGULATOR, grants).includes(
+          Capability.MANAGE_INDUSTRIES,
+        ),
+      );
+    }
   });
 
   it('resolves the same list regardless of how the question is asked', () => {
@@ -307,5 +359,26 @@ describe('what an organization type may hold at most', () => {
       Capability.MOVE_STOCK,
     );
     expect(ceilingOf(OrganizationType.REGULATOR)).not.toContain(Capability.SELL);
+  });
+
+  it('lets only a regulator organization administrator decide licences', () => {
+    // DECIDE_LICENCES used to ride inside every org-admin's role, so a
+    // manufacturer's administrator was offered the regulator's command centre
+    // in the navigation. Deciding licences is done to businesses, never by
+    // them: the authority's own administrator holds it, and nobody else.
+    expect(
+      capabilitiesFor(UserRole.ORG_ADMIN, OrganizationType.MANUFACTURER),
+    ).not.toContain(Capability.DECIDE_LICENCES);
+    expect(
+      capabilitiesFor(UserRole.ORG_ADMIN, OrganizationType.RETAILER),
+    ).not.toContain(Capability.DECIDE_LICENCES);
+    expect(
+      capabilitiesFor(UserRole.ORG_ADMIN, OrganizationType.REGULATOR),
+    ).toContain(Capability.DECIDE_LICENCES);
+    // Standing widens reading, never deciding: an inspector or auditor at an
+    // authority reviews, they do not approve.
+    expect(
+      capabilitiesFor(UserRole.AUDITOR, OrganizationType.REGULATOR),
+    ).not.toContain(Capability.DECIDE_LICENCES);
   });
 });

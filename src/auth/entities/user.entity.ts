@@ -8,6 +8,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { Organization } from '../../organization/entities/organization.entity';
+import { Capability } from '../capabilities';
 import { UserRole } from '../user-role.enum';
 
 @Entity('users')
@@ -33,6 +34,37 @@ export class User {
    */
   @Column({ name: 'must_change_password', type: 'boolean', default: false })
   mustChangePassword: boolean;
+
+  /**
+   * SHA-256 of the single-use password-reset token, set by the forgot-password
+   * flow. Null once used or expired. Hashed so a leaked users table cannot
+   * reset anyone's password.
+   */
+  @Column({ name: 'password_reset_token', type: 'varchar', nullable: true, select: false })
+  passwordResetToken: string | null;
+
+  /** When `passwordResetToken` stops being accepted. */
+  @Column({
+    name: 'password_reset_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+    select: false,
+  })
+  passwordResetExpiresAt: Date | null;
+
+  /**
+   * Capabilities the platform operator granted to this individual user, on
+   * top of what their role and organization confer. Written only through
+   * PATCH /api/users/:id/capabilities, which validates against
+   * DYNAMICALLY_GRANTABLE_CAPABILITIES.
+   */
+  @Column({
+    name: 'extra_capabilities',
+    type: 'text',
+    array: true,
+    default: () => "'{}'",
+  })
+  extraCapabilities: Capability[];
 
   @ManyToOne(() => Organization, { nullable: true, eager: true })
   @JoinColumn({ name: 'organization_id' })

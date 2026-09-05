@@ -4,7 +4,12 @@ import { CurrentUser, Public, RequireCapability } from '../../common/decorators'
 import { Capability } from '../capabilities';
 import { RateLimit } from '../../security/rate-limit.guard';
 import { ChangePasswordDto } from '../dto/user-management.dto';
-import { LoginDto, RegisterDto } from '../dto/auth.dto';
+import {
+  LoginDto,
+  RegisterDto,
+  RequestPasswordResetDto,
+  ResetPasswordDto,
+} from '../dto/auth.dto';
 import { User } from '../entities/user.entity';
 import { AuthService } from '../services/auth.service';
 
@@ -30,6 +35,26 @@ export class AuthController {
   @RateLimit('login', 20, 15 * 60 * 1000)
   async login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  // Five requests per address per quarter-hour is plenty for a human and
+  // useless for someone harvesting or flooding inboxes.
+  @Post('forgot-password')
+  @Public()
+  @HttpCode(200)
+  @RateLimit('forgot-password', 5, 15 * 60 * 1000)
+  async forgotPassword(@Body() dto: RequestPasswordResetDto) {
+    return this.auth.requestPasswordReset(dto);
+  }
+
+  // The token itself is the gate: replaying it fails, guessing it is not
+  // feasible. The rate limit just keeps a hammering client from burning CPU.
+  @Post('reset-password')
+  @Public()
+  @HttpCode(200)
+  @RateLimit('reset-password', 10, 15 * 60 * 1000)
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword(dto);
   }
 
   /** Replaces the caller's password and clears mustChangePassword. */

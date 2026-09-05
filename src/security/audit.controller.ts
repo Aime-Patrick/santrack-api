@@ -6,9 +6,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Capability } from '../auth/capabilities';
+import { Capability, userCan } from '../auth/capabilities';
 import { User } from '../auth/entities/user.entity';
-import { UserRole } from '../auth/user-role.enum';
 import {
   CurrentUser,
   OptionalActingOrg,
@@ -25,10 +24,11 @@ import { AuditService } from './audit.service';
 /**
  * Audit log access (proposal section 15).
  *
- * Business staff see their own organization's footprint. The platform
- * operator sees every organization — the digital footprint of the whole
- * platform — and may narrow by organizationId. Detail returns every field
- * stored on the entry plus the related actor and organization records.
+ * Business staff see their own organization's footprint. READ_AUDIT holders —
+ * the platform operator and licensing authorities — see every organization,
+ * the digital footprint of the whole platform, and may narrow by
+ * organizationId. Detail returns every field stored on the entry plus the
+ * related actor and organization records.
  */
 @ApiTags('Security')
 @ApiBearerAuth()
@@ -45,12 +45,13 @@ export class AuditController {
     @Query('organizationId', new ParseIntPipe({ optional: true }))
     organizationId?: number,
   ) {
-    const platformWide = actor.role === UserRole.SYSTEM_ADMIN;
+    const platformWide = userCan(actor, Capability.READ_AUDIT);
     if (!platformWide && !organization) {
       throw new OrganizationRequiredException();
     }
 
-    // Only the platform operator may read across organizations or pick one.
+    // Only READ_AUDIT holders (operator + licensing authorities) may read
+    // across organizations or pick one.
     const scopeId = platformWide ? organizationId : organization!.id;
 
     const entries = await this.audit.recent(scopeId, limit);
@@ -77,7 +78,7 @@ export class AuditController {
       throw new NotFoundEntityException('AuditLog', id);
     }
 
-    const platformWide = actor.role === UserRole.SYSTEM_ADMIN;
+    const platformWide = userCan(actor, Capability.READ_AUDIT);
     if (!platformWide) {
       if (!organization) {
         throw new OrganizationRequiredException();

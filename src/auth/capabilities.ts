@@ -75,19 +75,51 @@ export enum Capability {
    * businesses on the platform, it does not administer the platform.
    */
   ADMINISTER_PLATFORM = 'ADMINISTER_PLATFORM',
+
+  /**
+   * Register a business in the industry registry ("Add Industry").
+   *
+   * A registry write, not a supervisory read: OVERSEE_INDUSTRIES lets an
+   * authority look at every business, MANAGE_INDUSTRIES creates one. By
+   * default only the platform operator holds it; it is the first capability
+   * that can be granted to an individual user (see
+   * DYNAMICALLY_GRANTABLE_CAPABILITIES) so a specific officer can be trusted
+   * with it when the workload demands.
+   */
+  MANAGE_INDUSTRIES = 'MANAGE_INDUSTRIES',
+
+  /**
+   * Read the platform-wide audit log - the digital footprint of every write
+   * across all organizations.
+   *
+   * Business staff keep reading their own organization's footprint through
+   * VIEW_OPERATIONS with an organization scope; this is the wider view a
+   * supervisor needs to answer "who did what to whom across the platform".
+   * Held by the platform operator and conferred on licensing authorities by
+   * their standing.
+   */
+  READ_AUDIT = 'READ_AUDIT',
 }
 
 const ALL = Object.values(Capability);
 
 /**
- * Everything a business can do inside its own four walls. Excludes the two
- * cross-organization capabilities: overseeing the industry registry and
- * administering the platform are things done *to* businesses, not *by* them.
+ * Everything a business can do inside its own four walls. Excludes the
+ * cross-organization capabilities: overseeing the industry registry,
+ * administering the platform, deciding licence applications, writing to the
+ * registry, and reading the platform-wide audit log are things done *to*
+ * businesses or *to* the platform, not *by* a business's own staff. Licence
+ * decisions are granted separately, only to an ORG_ADMIN who works for a
+ * licensing authority (see capabilitiesFor) - a manufacturer's administrator
+ * must not open the regulator's command centre.
  */
 const ALL_WITHIN_ORGANIZATION = ALL.filter(
   (capability) =>
     capability !== Capability.ADMINISTER_PLATFORM &&
-    capability !== Capability.OVERSEE_INDUSTRIES,
+    capability !== Capability.OVERSEE_INDUSTRIES &&
+    capability !== Capability.DECIDE_LICENCES &&
+    capability !== Capability.MANAGE_INDUSTRIES &&
+    capability !== Capability.READ_AUDIT,
 );
 
 /**
@@ -106,6 +138,8 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     Capability.MANAGE_USERS,
     Capability.OVERSEE_INDUSTRIES,
     Capability.ADMINISTER_PLATFORM,
+    Capability.MANAGE_INDUSTRIES,
+    Capability.READ_AUDIT,
   ],
   // The most senior role a customer can hold, and still not a platform
   // operator - an organization administrator must not be able to award their
@@ -179,7 +213,14 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
 export const CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE: Partial<
   Record<OrganizationType, Capability[]>
 > = {
-  [OrganizationType.REGULATOR]: [Capability.OVERSEE_INDUSTRIES],
+  // An authority supervises the businesses on the platform: it reads the
+  // industry registry and the platform-wide audit log. Neither is a write -
+  // registry writes (MANAGE_INDUSTRIES) stay with the operator unless a
+  // specific officer is granted them.
+  [OrganizationType.REGULATOR]: [
+    Capability.OVERSEE_INDUSTRIES,
+    Capability.READ_AUDIT,
+  ],
 };
 
 /**
@@ -212,6 +253,7 @@ export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
     Capability.DECIDE_LICENCES,
     Capability.MANAGE_RECALL,
     Capability.MANAGE_USERS,
+    Capability.READ_AUDIT,
   ],
 
   // ── Manufacturer ─────────────────────────────────────────────────────
@@ -295,6 +337,19 @@ export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
 };
 
 /**
+ * Capabilities the platform operator may grant to an individual user, on top
+ * of what the user's role and organization already give them. Anything not in
+ * this list is refused by PATCH /api/users/:id/capabilities.
+ *
+ * Kept deliberately small: a per-user grant is an exception made for a
+ * specific officer, so each entry should be something a normal role would
+ * never hold.
+ */
+export const DYNAMICALLY_GRANTABLE_CAPABILITIES: Capability[] = [
+  Capability.MANAGE_INDUSTRIES,
+];
+
+/**
  * Whether a role holds a capability on its own, before any organization
  * standing is taken into account.
  *
@@ -308,7 +363,8 @@ export function can(role: UserRole, capability: Capability): boolean {
 
 /**
  * Everything this person can actually do: what their role grants, plus what
- * their organization's standing confers.
+ * their organization's standing confers, plus any capabilities the platform
+ * operator granted them individually.
  *
  * This is what the guard enforces and what /api/auth/me reports, so the
  * navigation the browser draws and the answer the API gives are computed from
@@ -317,6 +373,7 @@ export function can(role: UserRole, capability: Capability): boolean {
 export function capabilitiesFor(
   role: UserRole,
   organizationType?: OrganizationType | null,
+  granted: Capability[] = [],
 ): Capability[] {
   const held = new Set(ROLE_CAPABILITIES[role] ?? []);
 
@@ -342,6 +399,25 @@ export function capabilitiesFor(
         held.delete(capability);
       }
     }
+  }
+
+  // Licence decisions belong to a licensing authority's administrator, not to
+  // a job title: the same ORG_ADMIN role at a manufacturer must not hold it.
+  // The ceiling keeps it for REGULATOR organizations; this is the grant.
+  if (
+    role === UserRole.ORG_ADMIN &&
+    organizationType === OrganizationType.REGULATOR
+  ) {
+    held.add(Capability.DECIDE_LICENCES);
+  }
+
+  // Per-user grants are applied last, deliberately outside the ceiling: an
+  // explicit grant from the platform operator to a named officer is an
+  // exception to the organization's ordinary limits, not a case for the
+  // ceiling to re-strip. The endpoint that writes these validates them
+  // against DYNAMICALLY_GRANTABLE_CAPABILITIES first.
+  for (const capability of granted) {
+    held.add(capability);
   }
 
   // Declaration order, so the payload is stable and diffable.
@@ -390,14 +466,25 @@ export const CAPABILITY_DESCRIPTIONS: Record<Capability, string> = {
     'Screen licence applications, approve or reject, and suspend, reinstate or revoke licences.',
   [Capability.ADMINISTER_PLATFORM]:
     'Administer the platform itself: the registry, regulatory standing and licence approval.',
+  [Capability.MANAGE_INDUSTRIES]:
+    'Register businesses in the industry registry (Add Industry).',
+  [Capability.READ_AUDIT]:
+    'Read the platform-wide audit log - the digital footprint of every write across all organizations.',
 };
 
 /** Whether a specific person may perform an operation. */
 export function userCan(
-  user: { role: UserRole; organization?: { type: OrganizationType } | null },
+  user: {
+    role: UserRole;
+    organization?: { type: OrganizationType } | null;
+    /** Per-user grants the platform operator assigned (see capabilitiesFor). */
+    extraCapabilities?: Capability[];
+  },
   capability: Capability,
 ): boolean {
-  return capabilitiesFor(user.role, user.organization?.type).includes(
-    capability,
-  );
+  return capabilitiesFor(
+    user.role,
+    user.organization?.type,
+    user.extraCapabilities,
+  ).includes(capability);
 }

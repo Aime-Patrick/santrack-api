@@ -15,8 +15,10 @@ import { Organization } from '../../organization/entities/organization.entity';
 import {
   CreateUserDto,
   ResetPasswordDto,
+  SetUserCapabilitiesDto,
   UpdateUserDto,
 } from '../dto/user-management.dto';
+import { DYNAMICALLY_GRANTABLE_CAPABILITIES } from '../capabilities';
 import { User } from '../entities/user.entity';
 import { UserRole } from '../user-role.enum';
 
@@ -196,6 +198,44 @@ export class UserManagementService {
       user.organization = org;
     }
 
+    const saved = await this.users.save(user);
+    return this.describe(saved);
+  }
+
+  /**
+   * Replaces a user's individually granted capabilities.
+   *
+   * Operator-only (the controller requires ADMINISTER_PLATFORM): granting a
+   * capability is done to the platform, not inside one business. Only
+   * DYNAMICALLY_GRANTABLE_CAPABILITIES are accepted, so a request can never
+   * confer something the whitelist does not name.
+   */
+  async setCapabilities(
+    actor: User,
+    userId: number,
+    dto: SetUserCapabilitiesDto,
+  ): Promise<Omit<User, 'passwordHash'>> {
+    const user = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
+    if (!user) {
+      throw new NotFoundEntityException('User', userId);
+    }
+
+    this.requireVisible(actor, user);
+
+    const grantable = new Set(DYNAMICALLY_GRANTABLE_CAPABILITIES);
+    for (const capability of dto.capabilities) {
+      if (!grantable.has(capability)) {
+        throw new TraceabilityRuleException(
+          `${capability} cannot be granted to an individual user`,
+        );
+      }
+    }
+
+    // Store the canonical order; duplicates are harmless either way.
+    user.extraCapabilities = [...new Set(dto.capabilities)];
     const saved = await this.users.save(user);
     return this.describe(saved);
   }
