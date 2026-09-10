@@ -52,6 +52,36 @@ export class Facility {
   @Column({ type: 'varchar', nullable: true })
   address: string | null;
 
+  @Column({ type: 'varchar', nullable: true })
+  province: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  district: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  sector: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  cell: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  village: string | null;
+
+  @Column({ name: 'business_center', type: 'varchar', nullable: true })
+  businessCenter: string | null;
+
+  @Column({ name: 'gps_coordinates', type: 'jsonb', nullable: true })
+  gpsCoordinates: { lat: number; lng: number } | null;
+
+  @Column({ name: 'land_upi', type: 'varchar', nullable: true })
+  landUpi: string | null;
+
+  @Column({ name: 'ownership_type', type: 'varchar', nullable: true, default: 'OWNED' })
+  ownershipType: string | null;
+
+  @Column({ name: 'lease_contract_expiry', type: 'date', nullable: true })
+  leaseContractExpiry: string | null;
+
   @Column({ default: true })
   active: boolean;
 

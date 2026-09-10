@@ -48,8 +48,9 @@ async function seed() {
   // ─── Organizations ───
   console.log('--- Organizations ---');
   const orgDefs: { name: string; type: OrganizationType; onboardingStatus: OnboardingStatus }[] = [
-    { name: 'Rwanda Business Standards Agency', type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Rwanda Standards Board',           type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
     { name: 'Rwanda Food & Drugs Authority',    type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Rwanda Inspectorate (RICA)',       type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
     { name: 'Rwanda Fresh Dairy Ltd',           type: OrganizationType.MANUFACTURER, onboardingStatus: OnboardingStatus.APPROVED },
     { name: 'Kigali Distribution Centre',       type: OrganizationType.WAREHOUSE,   onboardingStatus: OnboardingStatus.APPROVED },
     { name: 'Huye Logistics',                   type: OrganizationType.DISTRIBUTOR, onboardingStatus: OnboardingStatus.APPROVED },
@@ -95,18 +96,25 @@ async function seed() {
       orgName: null,
     },
     {
-      email: 'regulator@rbsa.rw',
-      passwordHash: await bcrypt.hash('regulator123', 10),
-      fullName: 'RBSA Admin',
+      email: 'regulator@rsb.gov.rw',
+      passwordHash: await bcrypt.hash('rsb123', 10),
+      fullName: 'RSB Standards Admin',
       role: UserRole.ORG_ADMIN,
-      orgName: 'Rwanda Business Standards Agency',
+      orgName: 'Rwanda Standards Board',
     },
     {
-      email: 'admin@rda.gov.rw',
+      email: 'admin@rfda.gov.rw',
       passwordHash: await bcrypt.hash('fda_admin123', 10),
       fullName: 'Rwanda FDA Admin',
       role: UserRole.ORG_ADMIN,
       orgName: 'Rwanda Food & Drugs Authority',
+    },
+    {
+      email: 'regulator@rica.gov.rw',
+      passwordHash: await bcrypt.hash('rica123', 10),
+      fullName: 'RICA Inspectorate Admin',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Rwanda Inspectorate (RICA)',
     },
     {
       email: 'manufacturer@dairy.rw',

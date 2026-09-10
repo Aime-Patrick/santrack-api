@@ -7,6 +7,10 @@ import { Batch } from '../../batch/entities/batch.entity';
 import { today } from '../../item/entities/traceable-item.entity';
 import { Product } from '../../product/entities/product.entity';
 import { TraceabilityLevel } from '../../product/traceability-level.enum';
+import {
+  ProductRegistration,
+  ProductRegistrationStatus,
+} from '../../product/entities/product-registration.entity';
 import { License } from '../entities/license.entity';
 import {
   EligibilityCheck,
@@ -22,6 +26,7 @@ import {
   LicenseVerdict,
 } from '../licensing.enums';
 import { LicenseEnforcementService } from './license-enforcement.service';
+
 
 /** What a caller wants to know before it starts making something. */
 export interface EligibilityQuestion {
@@ -63,22 +68,14 @@ export class ProductionEligibilityService {
     private readonly products: Repository<Product>,
     @InjectRepository(Batch)
     private readonly batches: Repository<Batch>,
+    @InjectRepository(ProductRegistration)
+    private readonly productRegistrations: Repository<ProductRegistration>,
   ) {}
 
   async evaluate(question: EligibilityQuestion): Promise<EligibilityResult> {
     const facilityId = question.facilityId ?? null;
     const requestedDate = question.requestedDate ?? today();
     const activity = LicensedActivity.MANUFACTURING;
-
-    /**
-     * Two assessments, not one, and both through the single resolver.
-     *
-     * The first asks about the business — "is this company licensed to
-     * manufacture at all?" — and only organization-grained licences answer it.
-     * The second asks about the site, which brings the replacement rule (D1)
-     * into play: where the site holds its own licence, that licence and not the
-     * company's decides, for better and for worse.
-     */
     const organization = await this.enforcement.assess(
       question.organizationId,
       activity,
@@ -100,12 +97,7 @@ export class ProductionEligibilityService {
       this.organizationLicence(organization),
       this.facilityAuthorization(site, facilityId),
       this.categoryCoverage(governing, product),
-      {
-        code: EligibilityCheckCode.PRODUCT_AUTHORIZATION,
-        status: 'NOT_APPLICABLE',
-        message:
-          'Individual products do not carry their own authorisation on this platform yet.',
-      },
+      await this.productAuthorization(product, question.organizationId, requestedDate),
       this.validityAtRequestedDate(governing, requestedDate),
       this.traceability(product, question.productId),
       await this.batchAndRecall(product),
@@ -118,20 +110,6 @@ export class ProductionEligibilityService {
 
     const eligible = isEligible(checks);
     const mode = this.enforcement.enforcementMode();
-
-    /**
-     * Revocation is terminal in every mode, OFF included, matching the carve-out
-     * `check()` has always had and DR §24 invariant 8, which states the rule as
-     * a biconditional with no exception for a mode. Everything else defers to
-     * the configured mode: the platform supervises by default and gatekeeps only
-     * where it is told to (OQ 2 — global mode governs).
-     *
-     * The contract also says "under OFF, `blocking` is always false". Read
-     * absolutely, the two sentences contradict each other; read as scoping the
-     * mode-driven clause — OFF adds no blocking of its own — they agree, and
-     * that is the reading taken here. Revoking a licence exists to make a
-     * business stop, and a deployment setting is not a reason for it not to.
-     */
     const revoked =
       failedOn(checks, EligibilityCheckCode.ORGANIZATION_LICENCE, organization) ||
       failedOn(checks, EligibilityCheckCode.FACILITY_AUTHORIZATION, site);
@@ -148,17 +126,6 @@ export class ProductionEligibilityService {
       rulesetVersion: RULESET_VERSION,
     };
   }
-
-  // ----------------------------------------------------------------- checks
-
-  /**
-   * Does the business hold a manufacturing licence at all?
-   *
-   * A provisional licence inside its dates returns WARN, never FAIL (D2, DR §24
-   * invariant 13). 180 of 182 licences on the platform are grace records, so
-   * failing them would stop almost everything that produces today. The
-   * distinction becomes visible without becoming enforcing.
-   */
   private organizationLicence(assessment: Assessment): EligibilityCheck {
     const code = EligibilityCheckCode.ORGANIZATION_LICENCE;
     const licence = assessment.license;
@@ -231,19 +198,6 @@ export class ProductionEligibilityService {
         };
     }
   }
-
-  /**
-   * Is *this site* authorised for the run?
-   *
-   * The licence consulted here is the governing one under D1: the site's own if
-   * it holds one in a decided state, otherwise the company's. That replacement
-   * is what gives a site suspension any force — without it, suspending one
-   * plant would change nothing because the national licence would still pass.
-   *
-   * Provisional is deliberately not re-flagged here. D2 assigns the warning to
-   * `ORGANIZATION_LICENCE`, and saying it twice on the same licence would double
-   * a warning that already appears on nearly every run.
-   */
   private facilityAuthorization(
     assessment: Assessment,
     facilityId: number | null,
@@ -319,25 +273,6 @@ export class ProductionEligibilityService {
         };
     }
   }
-
-  /**
-   * Does the governing licence cover this kind of goods?
-   *
-   * Empty `permittedProductCategories` means unrestricted, and stays meaning
-   * that (OQ 5). Every `LicenseCategory` on the platform holds an empty list and
-   * this check is the field's first ever reader, so whatever "empty" is made to
-   * mean applies to 100% of licences on the first day. Empty already means
-   * unrestricted for warehousing and distribution; changing it here would be a
-   * policy change wearing a bug fix's clothes.
-   *
-   * The empty case is settled before the product is looked at, deliberately: a
-   * licence that restricts nothing has nothing to say about how a product is
-   * classified, and warning about an unclassified product against a licence
-   * that does not care would put a second warning on every run on the platform.
-   *
-   * A product with no category is a catalogue gap, not a regulatory breach, so
-   * it warns and never fails (OQ 12) — 92 of 111 products carry no category.
-   */
   private categoryCoverage(
     governing: License | null,
     product: Product | null,
@@ -404,17 +339,6 @@ export class ProductionEligibilityService {
       remedy: { label: 'Go to licences', href: '/licenses' },
     };
   }
-
-  /**
-   * Is the governing licence in force on the day the run is *for*?
-   *
-   * Against `requestedDate`, not today. That is what catches the case a
-   * manufacturer most needs warning about — a licence that is perfectly valid
-   * this morning and expires before the run they are scheduling — and it is
-   * also what makes a backdated run honest: a run recorded for a date the
-   * licence did not cover is ineligible, and under ADVISORY it is permitted
-   * with a finding rather than quietly accepted (OQ 11).
-   */
   private validityAtRequestedDate(
     governing: License | null,
     requestedDate: string,
@@ -460,15 +384,6 @@ export class ProductionEligibilityService {
     };
   }
 
-  /**
-   * Can the finished goods be traced at the level the catalogue says they must
-   * be (DR-01)?
-   *
-   * Every level SanTrack supports is satisfiable today, so this passes for any
-   * product that exists. It is in the list because the level is the thing a
-   * future regulatory minimum would be compared against, and a check that
-   * appears later changes the response shape.
-   */
   private traceability(product: Product | null, productId: number): EligibilityCheck {
     const code = EligibilityCheckCode.PRODUCT_TRACEABILITY;
 
@@ -499,16 +414,6 @@ export class ProductionEligibilityService {
       message: `${product.name} is traced at ${product.traceabilityLevel} level.`,
     };
   }
-
-  /**
-   * Is anything already made of this product under a recall or being held?
-   *
-   * Read from the batch lifecycle as it stands rather than from new recall
-   * semantics: `RECALLED` is what `RecallService` sets and lists, and
-   * `QUARANTINED` is the only "held pending a decision" state the enum has.
-   * Making more of a product whose existing lots are being withdrawn is exactly
-   * the moment somebody should be asked whether they mean to.
-   */
   private async batchAndRecall(product: Product | null): Promise<EligibilityCheck> {
     const code = EligibilityCheckCode.BATCH_AND_RECALL_RESTRICTIONS;
 
@@ -565,9 +470,98 @@ export class ProductionEligibilityService {
       message: `No lot of ${product.name} is under recall or quarantine.`,
     };
   }
+  private async productAuthorization(
+    product: Product | null,
+    organizationId: number,
+    requestedDate: string,
+  ): Promise<EligibilityCheck> {
+    const code = EligibilityCheckCode.PRODUCT_AUTHORIZATION;
+    const applyLink = { label: 'Apply for product registration', href: '/dashboard/products' };
+
+    if (!product) {
+      return {
+        code,
+        status: 'NOT_APPLICABLE',
+        message: 'No product was found, so its registration cannot be checked.',
+      };
+    }
+
+    const registrations = await this.productRegistrations.find({
+      where: {
+        productId: product.id,
+        organizationId,
+        status: In([
+          ProductRegistrationStatus.APPROVED,
+          ProductRegistrationStatus.SUSPENDED,
+        ]),
+      },
+      order: { updatedAt: 'DESC' },
+      take: 10,
+    });
+
+    const approved = registrations.find(
+      (r) =>
+        r.status === ProductRegistrationStatus.APPROVED &&
+        (!r.expiresOn || r.expiresOn >= requestedDate),
+    );
+
+    if (approved) {
+      return {
+        code,
+        status: 'PASS',
+        message:
+          `Product registration ${approved.registrationNumber} is active` +
+          (approved.expiresOn ? ` until ${approved.expiresOn}` : '') +
+          '.',
+      };
+    }
+
+    // An approved registration that has lapsed by the requested date.
+    const lapsed = registrations.find(
+      (r) =>
+        r.status === ProductRegistrationStatus.APPROVED &&
+        r.expiresOn &&
+        r.expiresOn < requestedDate,
+    );
+    if (lapsed) {
+      return {
+        code,
+        status: 'FAIL',
+        message:
+          `Product registration ${lapsed.registrationNumber} expired on ` +
+          `${lapsed.expiresOn}. Renew it before producing this product.`,
+        remedy: { label: 'Renew registration', href: '/dashboard/products' },
+      };
+    }
+
+    // Suspended registration — production is paused, not permanently forbidden.
+    const suspended = registrations.find(
+      (r) => r.status === ProductRegistrationStatus.SUSPENDED,
+    );
+    if (suspended) {
+      return {
+        code,
+        status: 'WARN',
+        message:
+          `Product registration ${suspended.registrationNumber} is currently ` +
+          'suspended. Contact the issuing authority before proceeding.',
+        remedy: applyLink,
+      };
+    }
+
+    // No approved or suspended registration at all.
+    return {
+      code,
+      status: 'FAIL',
+      message:
+        `${product.name} has no approved product registration. ` +
+        'Apply for a Product Registration / Marketing Authorisation before ' +
+        'starting production.',
+      remedy: applyLink,
+    };
+  }
 }
 
-/** Whether a named check failed on a licence a regulator has revoked. */
 function failedOn(
   checks: EligibilityCheck[],
   code: EligibilityCheckCode,

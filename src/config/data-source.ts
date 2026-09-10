@@ -22,6 +22,7 @@ import {
   LicenseDocument,
   LicenseEvent,
 } from '../licensing/entities/license.entity';
+import { LicenseFollowUp } from '../licensing/entities/license-followup.entity';
 import { ProductionEligibilityDecision } from '../licensing/entities/production-eligibility-decision.entity';
 import { Announcement } from '../announcements/entities/announcement.entity';
 import { IdentityPool } from '../item/entities/identity-pool.entity';
@@ -33,10 +34,16 @@ import { Organization } from '../organization/entities/organization.entity';
 import { OrganizationDocument } from '../organization/entities/organization-document.entity';
 import { OrganizationOwner } from '../organization/entities/organization-owner.entity';
 import { RegistrationConsultation } from '../organization/entities/registration-consultation.entity';
+import { RegistrationInfoRequest } from '../organization/entities/registration-info-request.entity';
 import { Product } from '../product/entities/product.entity';
 import { Brand } from '../product/entities/brand.entity';
 import { ProductCategory } from '../product/entities/product-category.entity';
 import { CategoryShareLink } from '../product/entities/category-share-link.entity';
+import {
+  ProductRegistration,
+  ProductRegistrationDocument,
+  ProductRegistrationEvent,
+} from '../product/entities/product-registration.entity';
 import { Sale, SaleLine } from '../sale/entities/sale.entity';
 import { TraceabilityEvent } from '../traceability/entities/traceability-event.entity';
 import { VerificationAttempt } from '../traceability/entities/verification-attempt.entity';
@@ -99,10 +106,14 @@ export const ENTITIES = [
   OrganizationDocument,
   OrganizationOwner,
   RegistrationConsultation,
+  RegistrationInfoRequest,
   Location,
   Product,
   ProductCategory,
   CategoryShareLink,
+  ProductRegistration,
+  ProductRegistrationDocument,
+  ProductRegistrationEvent,
   Brand,
   Batch,
   TraceableItem,
@@ -119,6 +130,7 @@ export const ENTITIES = [
   License,
   LicenseDocument,
   LicenseEvent,
+  LicenseFollowUp,
   ComplianceFinding,
   RegulatoryCase,
   RegulatoryCaseEvent,

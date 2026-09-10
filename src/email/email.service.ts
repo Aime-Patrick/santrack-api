@@ -229,6 +229,100 @@ export class EmailService {
     });
   }
 
+  // ── License follow-up token emails ─────────────────────────────────────
+
+  async sendLicenseFollowUpLink(params: {
+    to: string;
+    licenseNumber: string;
+    conditionTitle: string;
+    conditionDescription: string;
+    responseUrl: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    const expiryStr = params.expiresAt.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    await this.send({
+      to: params.to,
+      subject: `Response required: ${params.conditionTitle} — SANTRACK`,
+      template: 'license-followup-request',
+      data: {
+        title: 'Licence condition response required',
+        licenseNumber: params.licenseNumber,
+        conditionTitle: params.conditionTitle,
+        conditionDescription: params.conditionDescription,
+        responseUrl: params.responseUrl,
+        expiryDate: expiryStr,
+      },
+    });
+  }
+
+  async sendLicenseFollowUpResponseReceived(params: {
+    to: string;
+    licenseNumber: string;
+    organizationName: string;
+    conditionTitle: string;
+    dashboardUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: `Response received: ${params.conditionTitle} — SANTRACK`,
+      template: 'license-followup-response-received',
+      data: {
+        title: 'Licence condition response received',
+        licenseNumber: params.licenseNumber,
+        organizationName: params.organizationName,
+        conditionTitle: params.conditionTitle,
+        dashboardUrl: params.dashboardUrl,
+      },
+    });
+  }
+
+  async sendRegistrationInfoRequest(params: {
+    to: string;
+    companyName: string;
+    requestMessage: string;
+    responseUrl: string;
+    expiresAt: Date;
+  }): Promise<void> {
+    const expiryStr = params.expiresAt.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+    await this.send({
+      to: params.to,
+      subject: 'Additional information required for your registration — SANTRACK',
+      template: 'registration-info-request',
+      data: {
+        title: 'Additional information required',
+        companyName: params.companyName,
+        requestMessage: params.requestMessage,
+        responseUrl: params.responseUrl,
+        expiryDate: expiryStr,
+      },
+    });
+  }
+
+  async sendRegistrationResponseReceived(params: {
+    to: string;
+    companyName: string;
+    dashboardUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: 'Applicant responded to information request — SANTRACK',
+      template: 'registration-response-received',
+      data: {
+        title: 'Information request response received',
+        companyName: params.companyName,
+        dashboardUrl: params.dashboardUrl,
+      },
+    });
+  }
+
   /**
    * Notifies a user that their account has been removed by a platform
    * administrator. Sent before the row is deleted so the address is still

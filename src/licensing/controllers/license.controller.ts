@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Res,
   UploadedFile,
@@ -20,6 +22,8 @@ import {
   ActingOrg,
   CurrentUser,
   OptionalActingOrg,
+  Public,
+  RequireAnyCapability,
   RequireCapability,
 } from '../../common/decorators';
 import { OrganizationRequiredException, TraceabilityRuleException, NotFoundEntityException } from '../../common/errors';
@@ -27,11 +31,17 @@ import { UserRole } from '../../auth/user-role.enum';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
 import {
+  ActionFollowUpDto,
   ApplyForLicenseDto,
   AttachDocumentDto,
+  CloseFollowUpDto,
+  CreateFollowUpDto,
+  CreateLicenseCategoryDto,
   DecisionDto,
   ReasonDto,
   RequiredReasonDto,
+  SendFollowUpLinkDto,
+  UpdateLicenseCategoryDto,
 } from '../dto/license.dto';
 import { ComplianceFinding } from '../entities/compliance-finding.entity';
 import { License } from '../entities/license.entity';
@@ -58,7 +68,69 @@ export class LicenseController {
       requiredDocuments: category.requiredDocuments,
       permittedProductCategories: category.permittedProductCategories,
       validityMonths: category.validityMonths,
+      active: category.active,
     }));
+  }
+
+  @Get('categories/all')
+  @RequireAnyCapability(
+    Capability.ADMINISTER_PLATFORM,
+    Capability.OVERSEE_INDUSTRIES,
+    Capability.DECIDE_LICENCES,
+  )
+  async allCategories() {
+    return (await this.licenses.listAllCategories()).map((category) => ({
+      id: category.id,
+      code: category.code,
+      name: category.name,
+      activity: category.activity,
+      appliesTo: category.appliesTo,
+      requiredDocuments: category.requiredDocuments,
+      permittedProductCategories: category.permittedProductCategories,
+      validityMonths: category.validityMonths,
+      active: category.active,
+    }));
+  }
+
+  @Post('categories')
+  @RequireAnyCapability(
+    Capability.ADMINISTER_PLATFORM,
+    Capability.OVERSEE_INDUSTRIES,
+  )
+  async createCategory(@Body() dto: CreateLicenseCategoryDto) {
+    return this.licenses.createCategory(dto);
+  }
+
+  @Patch('categories/:id')
+  @RequireAnyCapability(
+    Capability.ADMINISTER_PLATFORM,
+    Capability.OVERSEE_INDUSTRIES,
+  )
+  async updateCategory(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateLicenseCategoryDto,
+  ) {
+    return this.licenses.updateCategory(id, dto);
+  }
+
+  @Delete('categories/:id')
+  @RequireAnyCapability(
+    Capability.ADMINISTER_PLATFORM,
+    Capability.OVERSEE_INDUSTRIES,
+  )
+  async deleteCategory(@Param('id', ParseIntPipe) id: number) {
+    return this.licenses.deleteCategory(id);
+  }
+
+  /** Public verification of an issued licence certificate by its licence number. */
+  @Get('public/verify/:licenseNumber')
+  @Public()
+  async verifyPublic(@Param('licenseNumber') licenseNumber: string) {
+    const result = await this.licenses.verifyByNumber(licenseNumber);
+    if (!result) {
+      throw new NotFoundEntityException('License', licenseNumber);
+    }
+    return result;
   }
 
   /** The caller's own licences and applications. */
@@ -203,6 +275,66 @@ export class LicenseController {
         `attachment; filename="${document.filename.replace(/["\r\n]/g, '')}"`,
       )
       .send(content);
+  }
+
+  @Get(':id/follow-ups')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async followUps(
+    @ActingOrg() organization: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const followUps = await this.licenses.listFollowUpsOfOwn(organization, id);
+    return followUps.map((fu) => ({
+      id: fu.id,
+      licenseId: fu.licenseId,
+      title: fu.title,
+      description: fu.description,
+      priority: fu.priority,
+      status: fu.status,
+      dueDate: fu.dueDate,
+      createdBy: fu.createdBy ? { id: fu.createdBy.id, fullName: fu.createdBy.fullName } : null,
+      businessResponse: fu.businessResponse,
+      evidenceAttachmentKey: fu.evidenceAttachmentKey,
+      evidenceFilename: fu.evidenceFilename,
+      actionedBy: fu.actionedBy ? { id: fu.actionedBy.id, fullName: fu.actionedBy.fullName } : null,
+      actionedAt: fu.actionedAt,
+      closureNotes: fu.closureNotes,
+      closedBy: fu.closedBy ? { id: fu.closedBy.id, fullName: fu.closedBy.fullName } : null,
+      closedAt: fu.closedAt,
+      createdAt: fu.createdAt,
+      updatedAt: fu.updatedAt,
+    }));
+  }
+
+  @Post(':id/follow-ups/:followUpId/action')
+  @RequireCapability(Capability.MANAGE_USERS)
+  async actionFollowUp(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('followUpId', ParseIntPipe) followUpId: number,
+    @Body() dto: ActionFollowUpDto,
+  ) {
+    const fu = await this.licenses.actionFollowUp(organization, actor, id, followUpId, dto);
+    return {
+      id: fu.id,
+      licenseId: fu.licenseId,
+      title: fu.title,
+      description: fu.description,
+      priority: fu.priority,
+      status: fu.status,
+      dueDate: fu.dueDate,
+      businessResponse: fu.businessResponse,
+      evidenceAttachmentKey: fu.evidenceAttachmentKey,
+      evidenceFilename: fu.evidenceFilename,
+      actionedBy: fu.actionedBy ? { id: fu.actionedBy.id, fullName: fu.actionedBy.fullName } : null,
+      actionedAt: fu.actionedAt,
+      closureNotes: fu.closureNotes,
+      closedBy: fu.closedBy ? { id: fu.closedBy.id, fullName: fu.closedBy.fullName } : null,
+      closedAt: fu.closedAt,
+      createdAt: fu.createdAt,
+      updatedAt: fu.updatedAt,
+    };
   }
 }
 
@@ -401,6 +533,105 @@ export class LicenseReviewController {
       uploadedAt: document.uploadedAt,
     }));
   }
+
+  @Get(':id/follow-ups')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async followUps(
+    @ActingOrg() regulator: Organization,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    requireRegulatorStanding(regulator);
+    const followUps = await this.licenses.listFollowUps(id);
+    return followUps.map((fu) => ({
+      id: fu.id,
+      licenseId: fu.licenseId,
+      title: fu.title,
+      description: fu.description,
+      priority: fu.priority,
+      status: fu.status,
+      dueDate: fu.dueDate,
+      createdBy: fu.createdBy ? { id: fu.createdBy.id, fullName: fu.createdBy.fullName } : null,
+      businessResponse: fu.businessResponse,
+      evidenceAttachmentKey: fu.evidenceAttachmentKey,
+      evidenceFilename: fu.evidenceFilename,
+      actionedBy: fu.actionedBy ? { id: fu.actionedBy.id, fullName: fu.actionedBy.fullName } : null,
+      actionedAt: fu.actionedAt,
+      closureNotes: fu.closureNotes,
+      closedBy: fu.closedBy ? { id: fu.closedBy.id, fullName: fu.closedBy.fullName } : null,
+      closedAt: fu.closedAt,
+      createdAt: fu.createdAt,
+      updatedAt: fu.updatedAt,
+    }));
+  }
+
+  @Post(':id/follow-ups')
+  @RequireAnyCapability(Capability.DECIDE_LICENCES, Capability.OVERSEE_INDUSTRIES)
+  async createFollowUp(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateFollowUpDto,
+  ) {
+    requireRegulatorStanding(regulator);
+    const fu = await this.licenses.addFollowUp(regulator, actor, id, dto);
+    return {
+      id: fu.id,
+      licenseId: fu.licenseId,
+      title: fu.title,
+      description: fu.description,
+      priority: fu.priority,
+      status: fu.status,
+      dueDate: fu.dueDate,
+      createdBy: fu.createdBy ? { id: fu.createdBy.id, fullName: fu.createdBy.fullName } : null,
+      createdAt: fu.createdAt,
+    };
+  }
+
+  @Post(':id/follow-ups/:followUpId/close')
+  @RequireAnyCapability(Capability.DECIDE_LICENCES, Capability.OVERSEE_INDUSTRIES)
+  async closeFollowUp(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('followUpId', ParseIntPipe) followUpId: number,
+    @Body() dto: CloseFollowUpDto,
+  ) {
+    requireRegulatorStanding(regulator);
+    const fu = await this.licenses.closeFollowUp(regulator, actor, id, followUpId, dto);
+    return {
+      id: fu.id,
+      licenseId: fu.licenseId,
+      title: fu.title,
+      description: fu.description,
+      priority: fu.priority,
+      status: fu.status,
+      closureNotes: fu.closureNotes,
+      closedBy: fu.closedBy ? { id: fu.closedBy.id, fullName: fu.closedBy.fullName } : null,
+      closedAt: fu.closedAt,
+    };
+  }
+
+  /**
+   * Generates a one-time response token for a follow-up condition and emails
+   * the holder organisation with the link so they can submit evidence without
+   * having to log in.
+   */
+  @Post(':id/follow-ups/:followUpId/send-link')
+  @RequireAnyCapability(Capability.DECIDE_LICENCES, Capability.OVERSEE_INDUSTRIES)
+  async sendFollowUpLink(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('followUpId', ParseIntPipe) followUpId: number,
+    @Body() dto: SendFollowUpLinkDto,
+  ) {
+    requireRegulatorStanding(regulator);
+    const fu = await this.licenses.sendFollowUpLink(regulator, actor, id, followUpId, dto);
+    return {
+      id: fu.id,
+      responseTokenExpiresAt: fu.responseTokenExpiresAt,
+    };
+  }
 }
 
 function describe(license: License) {
@@ -415,10 +646,6 @@ function describe(license: License) {
     categoryCode: license.category.code,
     categoryName: license.category.name,
     activity: license.category.activity,
-    // What this licence is about: the business, or one of its sites (DR-07).
-    // Stated explicitly rather than left for the caller to infer from a null,
-    // so the UI can group a national licence and a plant licence apart instead
-    // of listing them as interchangeable rows.
     facilityId: license.facilityId ?? null,
     facilityName: license.facility?.name ?? null,
     grain: grainOf(license),
@@ -429,6 +656,7 @@ function describe(license: License) {
     statusReason: license.statusReason,
     statusChangedAt: license.statusChangedAt,
     previousLicenseId: license.previousLicense?.id ?? null,
+    premiseMetadata: license.premiseMetadata ?? null,
   };
 }
 

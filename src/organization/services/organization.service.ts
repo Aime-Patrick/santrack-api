@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
 import { In, Repository } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
 import { STORAGE_PROVIDER, StorageProvider } from '../../storage/storage.provider';
@@ -16,6 +17,7 @@ import { NotificationType } from '../../notifications/entities/notification.enti
 import { EmailService } from '../../email/email.service';
 import { Product } from '../../product/entities/product.entity';
 import {
+  CreateInfoRequestDto,
   CreateOrganizationDto,
   RegistrationDecisionDto,
 } from '../dto/organization.dto';
@@ -29,6 +31,10 @@ import { Facility } from '../entities/facility.entity';
 import { Organization } from '../entities/organization.entity';
 import { OrganizationDocument } from '../entities/organization-document.entity';
 import { OrganizationOwner } from '../entities/organization-owner.entity';
+import {
+  InfoRequestStatus,
+  RegistrationInfoRequest,
+} from '../entities/registration-info-request.entity';
 import { FacilityService } from './facility.service';
 
 /** A certificate uploaded with a registration application. */
@@ -53,11 +59,20 @@ export interface RegistryEntry {
   organization: Organization;
   staff: number;
   products: number;
+  facilities: number;
   licenses: {
+    id: number;
     licenseNumber: string;
     activity: string;
+    categoryCode?: string;
+    categoryName?: string;
     status: string;
+    issuedOn?: string | null;
     expiresOn: string | Date | null;
+    issuedByOrgId: number | null;
+    issuedByOrgName: string | null;
+    facilityId: number | null;
+    facilityName: string | null;
   }[];
 }
 
@@ -80,6 +95,8 @@ export class OrganizationService {
     private readonly owners: Repository<OrganizationOwner>,
     @InjectRepository(RegulatoryAuthority)
     private readonly regulatoryAuthorities: Repository<RegulatoryAuthority>,
+    @InjectRepository(RegistrationInfoRequest)
+    private readonly infoRequests: Repository<RegistrationInfoRequest>,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
     private readonly sites: FacilityService,
@@ -498,11 +515,22 @@ export class OrganizationService {
           products: await this.products.count({
             where: { organizationId: organization.id },
           }),
+          facilities: await this.facilities.count({
+            where: { organization: { id: organization.id } },
+          }),
           licenses: licenses.map((license) => ({
+            id: license.id,
             licenseNumber: license.licenseNumber,
-            activity: license.category.activity,
+            activity: license.category?.activity,
+            categoryCode: license.category?.code,
+            categoryName: license.category?.name,
             status: license.status,
+            issuedOn: license.issuedOn,
             expiresOn: license.expiresOn,
+            issuedByOrgId: license.issuedBy?.id ?? null,
+            issuedByOrgName: license.issuedBy?.name ?? null,
+            facilityId: license.facilityId,
+            facilityName: license.facility?.name ?? null,
           })),
         };
       }),
@@ -700,5 +728,229 @@ export class OrganizationService {
     await this.owners.delete({ organizationId });
     await this.sites.deleteFor(organizationId);
     await this.organizations.delete(organizationId);
+  }
+
+  // ── Information-request flow ───────────────────────────────────────────
+
+  /**
+   * Creates a time-limited information request for a pending registration.
+   * Generates a UUID token, persists it, and emails the applicant a dynamic
+   * link they can visit without logging in.
+   */
+  async createInfoRequest(
+    regulator: Organization,
+    actor: User,
+    organizationId: number,
+    dto: CreateInfoRequestDto,
+  ): Promise<RegistrationInfoRequest> {
+    if (regulator.type !== OrganizationType.REGULATOR) {
+      throw new TraceabilityRuleException(
+        'Only a licensing authority can send information requests',
+      );
+    }
+
+    const organization = await this.organizations.findOne({
+      where: { id: organizationId },
+    });
+    if (!organization) {
+      throw new NotFoundEntityException('Organization', organizationId);
+    }
+
+    const decidable: OnboardingStatus[] = [
+      OnboardingStatus.PENDING,
+      OnboardingStatus.CHANGES_REQUESTED,
+      OnboardingStatus.UNDER_CONSULTATION,
+    ];
+    if (!decidable.includes(organization.onboardingStatus)) {
+      throw new TraceabilityRuleException(
+        `Cannot request information from an organization that is ${organization.onboardingStatus}`,
+      );
+    }
+
+    const expiryDays = dto.expiryDays ?? 7;
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + expiryDays);
+
+    const infoRequest = await this.infoRequests.save(
+      this.infoRequests.create({
+        organizationId,
+        token: randomUUID(),
+        requestMessage: dto.requestMessage,
+        requestedFields: dto.requestedFields ?? [],
+        expiresAt,
+        status: InfoRequestStatus.PENDING,
+        createdById: actor.id,
+      }),
+    );
+
+    // Build the response URL and email the applicant
+    const responseUrl = `${this.appPublicUrl}/apply/respond/${infoRequest.token}`;
+
+    // Notify all staff of the organization
+    const staff = await this.staffOf(organization.id);
+    await Promise.allSettled(
+      staff.map(async (user) => {
+        await this.notifications.sendToUser(user.id, {
+          type: NotificationType.WARNING,
+          title: 'Information requested on your registration',
+          message:
+            `A regulator has reviewed ${organization.name}'s registration and ` +
+            `requires additional information. Check your email for the request link.`,
+          module: 'compliance',
+          actionUrl: '/onboarding',
+        });
+
+        if (user.email) {
+          await this.email
+            .sendRegistrationInfoRequest({
+              to: user.email,
+              companyName: organization.name,
+              requestMessage: dto.requestMessage,
+              responseUrl,
+              expiresAt,
+            })
+            .catch(() => undefined);
+        }
+      }),
+    );
+
+    return infoRequest;
+  }
+
+  /**
+   * Looks up a token for the public response page. Returns enough data for
+   * the frontend to render the dynamic form.
+   *
+   * When the request has already been responded to, the method returns the
+   * original request plus the previously submitted response data so the page
+   * can show a read-only summary instead of a hard error.
+   */
+  async getInfoRequestByToken(token: string): Promise<
+    RegistrationInfoRequest & {
+      organizationName: string;
+      organizationEmail: string | null;
+      readOnly: boolean;
+    }
+  > {
+    const req = await this.infoRequests.findOne({
+      where: { token },
+      relations: { organization: true },
+    });
+
+    if (!req) {
+      throw new TraceabilityRuleException('This link is invalid or has already been used.');
+    }
+
+    if (req.status === InfoRequestStatus.EXPIRED || new Date() > req.expiresAt) {
+      // Mark expired lazily
+      if (req.status === InfoRequestStatus.PENDING) {
+        req.status = InfoRequestStatus.EXPIRED;
+        await this.infoRequests.save(req);
+      }
+      throw new TraceabilityRuleException('This link has expired. Please contact the regulator for a new request.');
+    }
+
+    // For RESPONDED requests: return the record with readOnly=true so the
+    // frontend can render a "you already submitted" read-only view.
+    return {
+      ...req,
+      organizationName: req.organization.name,
+      organizationEmail: req.organization.email,
+      readOnly: req.status === InfoRequestStatus.RESPONDED,
+    };
+  }
+
+  /**
+   * Processes the applicant's response to an information request.
+   * Marks the token as used, stores the response data, optionally stores an
+   * uploaded file, and notifies the regulator.
+   */
+  async respondToInfoRequest(
+    token: string,
+    responseData: Record<string, string> | null,
+    file?: UploadedFile,
+  ): Promise<void> {
+    const req = await this.infoRequests.findOne({
+      where: { token },
+      relations: { organization: true },
+    });
+
+    if (!req) {
+      throw new TraceabilityRuleException('This link is invalid or has already been used.');
+    }
+    if (req.status !== InfoRequestStatus.PENDING || new Date() > req.expiresAt) {
+      throw new TraceabilityRuleException('This link has expired or was already used.');
+    }
+
+    let attachmentKey: string | null = null;
+    let attachmentFilename: string | null = null;
+
+    if (file) {
+      if (!ALLOWED_CONTENT_TYPES.includes(file.mimetype)) {
+        throw new TraceabilityRuleException(
+          `${file.mimetype} is not accepted. Upload a PDF or image.`,
+        );
+      }
+      if (file.size > MAX_DOCUMENT_BYTES) {
+        throw new TraceabilityRuleException(
+          `File exceeds the ${MAX_DOCUMENT_BYTES / (1024 * 1024)}MB limit.`,
+        );
+      }
+      const stored = await this.storage.put({
+        folder: `organizations/${req.organizationId}/info-requests`,
+        filename: file.originalname,
+        contentType: file.mimetype,
+        content: file.buffer,
+      });
+      attachmentKey = stored.key;
+      attachmentFilename = file.originalname;
+    }
+
+    req.status = InfoRequestStatus.RESPONDED;
+    req.responseData = responseData;
+    req.responseAttachmentKey = attachmentKey;
+    req.responseAttachmentFilename = attachmentFilename;
+    req.respondedAt = new Date();
+    await this.infoRequests.save(req);
+
+    // Notify regulators
+    const regulators = await this.organizations.find({
+      where: { type: OrganizationType.REGULATOR },
+    });
+    const regulatorStaff: User[] = [];
+    for (const r of regulators) {
+      const staff = await this.staffOf(r.id);
+      regulatorStaff.push(...staff);
+    }
+
+    await Promise.allSettled(
+      regulatorStaff.map(async (user) => {
+        await this.notifications.sendToUser(user.id, {
+          type: NotificationType.INFO,
+          title: 'Applicant responded to information request',
+          message: `${req.organization.name} has submitted the requested information for their registration.`,
+          module: 'compliance',
+          actionUrl: '/dashboard/regulator',
+        });
+
+        if (user.email) {
+          await this.email
+            .sendRegistrationResponseReceived({
+              to: user.email,
+              companyName: req.organization.name,
+              dashboardUrl: `${this.appPublicUrl}/dashboard/regulator`,
+            })
+            .catch(() => undefined);
+        }
+      }),
+    );
+  }
+
+  /** Lists all info requests for an organization (regulator view). */
+  async listInfoRequests(organizationId: number): Promise<RegistrationInfoRequest[]> {
+    return this.infoRequests.find({
+      where: { organizationId },
+      order: { createdAt: 'DESC' },
+    });
   }
 }

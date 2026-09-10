@@ -28,6 +28,7 @@ import { TraceabilityRuleException } from '../../common/errors';
 import {
   AmendOrganizationDto,
   AttachRegistrationDocumentDto,
+  CreateInfoRequestDto,
   CreateOrganizationDto,
   GrantRegulatoryStandingDto,
   RegisterRegulatorDto,
@@ -36,6 +37,7 @@ import {
 } from '../dto/organization.dto';
 import { OrganizationType } from '../organization-type.enum';
 import { Organization } from '../entities/organization.entity';
+import { RegistrationInfoRequest } from '../entities/registration-info-request.entity';
 import {
   OrganizationService,
   UploadedFile as DocUpload,
@@ -83,6 +85,7 @@ export class OrganizationController {
       ...describe(entry.organization),
       staff: entry.staff,
       products: entry.products,
+      facilities: entry.facilities,
       licenses: entry.licenses,
     }));
   }
@@ -318,6 +321,32 @@ export class OrganizationController {
   async purge(@Param('id', ParseIntPipe) id: number): Promise<void> {
     await this.organizations.purge(id);
   }
+
+  /**
+   * Creates an information request for a pending registration application.
+   * Generates a secure token and emails the applicant a dynamic response link.
+   * Regulator-only.
+   */
+  @Post(':id/info-request')
+  @RequireCapability(Capability.DECIDE_LICENCES)
+  async createInfoRequest(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateInfoRequestDto,
+  ) {
+    return describeInfoRequest(
+      await this.organizations.createInfoRequest(regulator, actor, id, dto),
+    );
+  }
+
+  /** Lists all information requests filed against a registration. Regulator-only. */
+  @Get(':id/info-requests')
+  @RequireCapability(Capability.DECIDE_LICENCES)
+  async listInfoRequests(@Param('id', ParseIntPipe) id: number) {
+    const rows = await this.organizations.listInfoRequests(id);
+    return rows.map(describeInfoRequest);
+  }
 }
 
 function describe(organization: Organization) {
@@ -364,6 +393,20 @@ function describeDocument(document: {
     contentType: document.contentType,
     sizeBytes: document.sizeBytes,
     uploadedAt: document.uploadedAt,
+  };
+}
+
+function describeInfoRequest(req: RegistrationInfoRequest) {
+  return {
+    id: req.id,
+    organizationId: req.organizationId,
+    token: req.token,
+    requestMessage: req.requestMessage,
+    requestedFields: req.requestedFields,
+    expiresAt: req.expiresAt,
+    status: req.status,
+    respondedAt: req.respondedAt,
+    createdAt: req.createdAt,
   };
 }
 

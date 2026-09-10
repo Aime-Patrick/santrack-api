@@ -160,6 +160,13 @@ export class License {
   previousLicense: License | null;
 
   /**
+   * Premise metadata snapshot (e.g. technician profile, ownership type, products produced)
+   * for site/premise registration applications.
+   */
+  @Column({ name: 'premise_metadata', type: 'jsonb', nullable: true })
+  premiseMetadata: Record<string, any> | null;
+
+  /**
    * Issued by the grandfathering migration rather than by a regulator, so
    * organizations already trading when licensing arrived could keep working.
    * Carries a short expiry: it is a grace period, not an exemption.

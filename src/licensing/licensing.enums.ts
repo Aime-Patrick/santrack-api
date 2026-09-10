@@ -81,6 +81,23 @@ export enum LicenseEventType {
   RENEWED = 'RENEWED',
   CANCELLED = 'CANCELLED',
   EXPIRED = 'EXPIRED',
+  FOLLOW_UP_ADDED = 'FOLLOW_UP_ADDED',
+  FOLLOW_UP_ACTIONED = 'FOLLOW_UP_ACTIONED',
+  FOLLOW_UP_CLOSED = 'FOLLOW_UP_CLOSED',
+}
+
+/** Status lifecycle of a condition or follow-up item attached to a license. */
+export enum LicenseFollowUpStatus {
+  OPEN = 'OPEN',
+  ACTIONED = 'ACTIONED',
+  CLOSED = 'CLOSED',
+}
+
+export enum LicenseFollowUpPriority {
+  LOW = 'LOW',
+  MEDIUM = 'MEDIUM',
+  HIGH = 'HIGH',
+  CRITICAL = 'CRITICAL',
 }
 
 /**

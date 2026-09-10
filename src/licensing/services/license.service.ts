@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { randomUUID } from 'crypto';
 import { DataSource, EntityManager, In, IsNull, Repository } from 'typeorm';
 
 import { User } from '../../auth/entities/user.entity';
@@ -18,9 +19,16 @@ import { SequenceService } from '../../common/sequence.service';
 import { STORAGE_PROVIDER, StorageProvider } from '../../storage/storage.provider';
 import { permitsOperation, resolveGoverning } from '../governing-licence';
 import {
+  ActionFollowUpDto,
   ApplyForLicenseDto,
+  CloseFollowUpDto,
+  CreateFollowUpDto,
+  CreateLicenseCategoryDto,
   DecisionDto,
+  PublicFollowUpResponseDto,
   ReviewDecision,
+  SendFollowUpLinkDto,
+  UpdateLicenseCategoryDto,
 } from '../dto/license.dto';
 import {
   License,
@@ -28,9 +36,12 @@ import {
   LicenseDocument,
   LicenseEvent,
 } from '../entities/license.entity';
+import { LicenseFollowUp } from '../entities/license-followup.entity';
 import {
   LicensedActivity,
   LicenseEventType,
+  LicenseFollowUpPriority,
+  LicenseFollowUpStatus,
   LicenseStatus,
   permitsReturns,
 } from '../licensing.enums';
@@ -60,6 +71,8 @@ const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
 export class LicenseService {
   private readonly logger = new Logger(LicenseService.name);
 
+  private readonly _appPublicUrl: string;
+
   constructor(
     private readonly dataSource: DataSource,
     @InjectRepository(License)
@@ -68,13 +81,21 @@ export class LicenseService {
     private readonly categories: Repository<LicenseCategory>,
     @InjectRepository(LicenseDocument)
     private readonly documents: Repository<LicenseDocument>,
+    @InjectRepository(LicenseFollowUp)
+    private readonly followUps: Repository<LicenseFollowUp>,
     private readonly sequences: SequenceService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
     private readonly notifications: NotificationsGateway,
     private readonly email: EmailService,
-    private readonly config: ConfigService,
-  ) {}
+    config: ConfigService,
+  ) {
+    this._appPublicUrl = (
+      config.get<string>('appPublicUrl') ??
+      (config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'])[0] ??
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
+  }
 
   // ------------------------------------------------------------ applicant
 
@@ -115,11 +136,40 @@ export class LicenseService {
        * apply for Huye's: the second application would collide with the first
        * and the second plant could never be authorised.
        */
-      const facility = await this.resolveFacility(
-        manager,
-        organization,
-        dto.facilityId,
-      );
+      let facility: Facility | null = null;
+      if (dto.facilityId) {
+        facility = await this.resolveFacility(
+          manager,
+          organization,
+          dto.facilityId,
+        );
+      } else if (dto.facilityDetails?.name) {
+        // Create new facility for the organization
+        const facCount = await manager.count(Facility, {
+          where: { organizationId: organization.id },
+        });
+        const code = `FAC-${organization.id}-${String(facCount + 1).padStart(3, '0')}`;
+        facility = await manager.save(
+          Facility,
+          manager.create(Facility, {
+            organization,
+            organizationId: organization.id,
+            name: dto.facilityDetails.name,
+            code,
+            address: dto.facilityDetails.businessCenter ?? dto.facilityDetails.sector ?? null,
+            province: dto.facilityDetails.province ?? null,
+            district: dto.facilityDetails.district ?? null,
+            sector: dto.facilityDetails.sector ?? null,
+            cell: dto.facilityDetails.cell ?? null,
+            village: dto.facilityDetails.village ?? null,
+            businessCenter: dto.facilityDetails.businessCenter ?? null,
+            gpsCoordinates: dto.facilityDetails.gpsCoordinates ?? null,
+            landUpi: dto.facilityDetails.landUpi ?? null,
+            ownershipType: dto.facilityDetails.ownershipType ?? 'OWNED',
+            leaseContractExpiry: dto.facilityDetails.leaseContractExpiry ?? null,
+          }),
+        );
+      }
 
       const open = await manager.findOne(License, {
         where: {
@@ -149,6 +199,7 @@ export class LicenseService {
           // Both, so the licence can name its site without being reloaded.
           facility,
           facilityId: facility?.id ?? null,
+          premiseMetadata: dto.premiseMetadata ?? null,
           status: LicenseStatus.DRAFT,
           provisional: false,
         }),
@@ -674,6 +725,105 @@ export class LicenseService {
     return this.categories.find({ where: { active: true }, order: { name: 'ASC' } });
   }
 
+  async listAllCategories(): Promise<LicenseCategory[]> {
+    return this.categories.find({ order: { name: 'ASC' } });
+  }
+
+  async getCategoryById(id: number): Promise<LicenseCategory> {
+    const cat = await this.categories.findOne({ where: { id } });
+    if (!cat) {
+      throw new NotFoundEntityException('License category', id);
+    }
+    return cat;
+  }
+
+  async createCategory(dto: CreateLicenseCategoryDto): Promise<LicenseCategory> {
+    const code = dto.code.trim().toUpperCase();
+    const existing = await this.categories.findOne({ where: { code } });
+    if (existing) {
+      throw new TraceabilityRuleException(`A license category with code '${code}' already exists`);
+    }
+
+    const category = this.categories.create({
+      code,
+      name: dto.name.trim(),
+      activity: dto.activity,
+      appliesTo: dto.appliesTo || [],
+      permittedProductCategories: dto.permittedProductCategories || [],
+      requiredDocuments: dto.requiredDocuments || [],
+      validityMonths: dto.validityMonths ?? 12,
+      active: dto.active ?? true,
+    });
+
+    return this.categories.save(category);
+  }
+
+  async updateCategory(id: number, dto: UpdateLicenseCategoryDto): Promise<LicenseCategory> {
+    const category = await this.getCategoryById(id);
+
+    if (dto.name !== undefined) category.name = dto.name.trim();
+    if (dto.activity !== undefined) category.activity = dto.activity;
+    if (dto.appliesTo !== undefined) category.appliesTo = dto.appliesTo;
+    if (dto.permittedProductCategories !== undefined) category.permittedProductCategories = dto.permittedProductCategories;
+    if (dto.requiredDocuments !== undefined) category.requiredDocuments = dto.requiredDocuments;
+    if (dto.validityMonths !== undefined) category.validityMonths = dto.validityMonths;
+    if (dto.active !== undefined) category.active = dto.active;
+
+    return this.categories.save(category);
+  }
+
+  async deleteCategory(id: number): Promise<{ deleted: boolean; deactivated?: boolean; message: string }> {
+    const category = await this.getCategoryById(id);
+    const count = await this.licenses.count({ where: { category: { id } } });
+    if (count > 0) {
+      category.active = false;
+      await this.categories.save(category);
+      return {
+        deleted: false,
+        deactivated: true,
+        message: `Category has ${count} existing license(s) and was deactivated instead of deleted.`,
+      };
+    }
+    await this.categories.delete(id);
+    return {
+      deleted: true,
+      message: 'Category successfully deleted.',
+    };
+  }
+
+  async verifyByNumber(licenseNumber: string): Promise<{
+    valid: boolean;
+    licenseNumber: string;
+    organizationName: string;
+    categoryName: string;
+    activity: string;
+    facilityName: string | null;
+    status: string;
+    issuedOn: string | null;
+    expiresOn: string | null;
+    issuedByName: string | null;
+    premiseMetadata: Record<string, any> | null;
+  } | null> {
+    const lic = await this.licenses.findOne({
+      where: { licenseNumber: licenseNumber.trim().toUpperCase() },
+      relations: { organization: true, category: true, facility: true, issuedBy: true },
+    });
+    if (!lic) return null;
+    return {
+      valid: lic.status === LicenseStatus.ACTIVE,
+      licenseNumber: lic.licenseNumber,
+      organizationName: lic.organization?.name ?? 'Registered Licensee',
+      categoryName: lic.category?.name ?? '',
+      activity: lic.category?.activity ?? '',
+      facilityName: lic.facility?.name ?? null,
+      status: lic.status,
+      issuedOn: lic.issuedOn,
+      expiresOn: lic.expiresOn,
+      issuedByName: lic.issuedBy?.name ?? null,
+      premiseMetadata: lic.premiseMetadata,
+    };
+  }
+
   /**
    * The holder's own paperwork. Ownership first, then the list - a licence
    * that is not yours reads as absent rather than as forbidden, the same way
@@ -1065,10 +1215,357 @@ export class LicenseService {
   }
 
   private appPublicUrl(): string {
-    const configured = this.config.get<string>('appPublicUrl');
-    if (configured) return configured.replace(/\/$/, '');
-    const origins = this.config.get<string[]>('corsOrigins') ?? [];
-    return (origins[0] ?? 'http://localhost:3000').replace(/\/$/, '');
+    return this._appPublicUrl;
+  }
+
+  // ------------------------------------------------------------ follow-ups & conditions
+
+  /** Lists follow-ups / conditions attached to a license. */
+  async listFollowUps(licenseId: number): Promise<LicenseFollowUp[]> {
+    return this.followUps.find({
+      where: { licenseId },
+      relations: ['createdBy', 'actionedBy', 'closedBy'],
+      order: { createdAt: 'DESC' },
+    });
+  }
+
+  /** Lists follow-ups / conditions for the holder's own license after verifying ownership. */
+  async listFollowUpsOfOwn(
+    organization: Organization,
+    licenseId: number,
+  ): Promise<LicenseFollowUp[]> {
+    await this.requireOwn(organization, licenseId);
+    return this.listFollowUps(licenseId);
+  }
+
+  /** Regulators attach a post-approval condition or corrective action requirement. */
+  async addFollowUp(
+    regulator: Organization,
+    actor: User,
+    licenseId: number,
+    dto: CreateFollowUpDto,
+  ): Promise<LicenseFollowUp> {
+    requireRegulator(regulator);
+    return this.dataSource.transaction(async (manager) => {
+      const license = await manager.findOne(License, {
+        where: { id: licenseId },
+        relations: ['organization'],
+      });
+      if (!license) {
+        throw new NotFoundEntityException('License', licenseId);
+      }
+
+      const followUp = manager.create(LicenseFollowUp, {
+        licenseId: license.id,
+        license,
+        title: dto.title,
+        description: dto.description,
+        priority: dto.priority ?? LicenseFollowUpPriority.MEDIUM,
+        status: LicenseFollowUpStatus.OPEN,
+        dueDate: dto.dueDate ?? null,
+        createdBy: actor,
+      });
+
+      const saved = await manager.save(LicenseFollowUp, followUp);
+
+      const event = manager.create(LicenseEvent, {
+        license,
+        type: LicenseEventType.FOLLOW_UP_ADDED,
+        actor,
+        notes: `Condition/Follow-up added: "${dto.title}" (${dto.priority ?? 'MEDIUM'})`,
+      });
+      await manager.save(LicenseEvent, event);
+
+      return saved;
+    });
+  }
+
+  /** License holder responds with corrective action details and evidence. */
+  async actionFollowUp(
+    holderOrg: Organization,
+    actor: User,
+    licenseId: number,
+    followUpId: number,
+    dto: ActionFollowUpDto,
+  ): Promise<LicenseFollowUp> {
+    return this.dataSource.transaction(async (manager) => {
+      const followUp = await manager.findOne(LicenseFollowUp, {
+        where: { id: followUpId, licenseId },
+        relations: ['license', 'license.organization'],
+      });
+      if (!followUp) {
+        throw new NotFoundEntityException('License follow-up condition', followUpId);
+      }
+
+      if (followUp.license.organization.id !== holderOrg.id) {
+        throw new TraceabilityRuleException(
+          'You can only submit actions for your own organization\'s licenses',
+        );
+      }
+
+      followUp.businessResponse = dto.businessResponse;
+      if (dto.evidenceAttachmentKey) {
+        followUp.evidenceAttachmentKey = dto.evidenceAttachmentKey;
+      }
+      if (dto.evidenceFilename) {
+        followUp.evidenceFilename = dto.evidenceFilename;
+      }
+      followUp.actionedBy = actor;
+      followUp.actionedAt = new Date();
+      followUp.status = LicenseFollowUpStatus.ACTIONED;
+
+      const saved = await manager.save(LicenseFollowUp, followUp);
+
+      const event = manager.create(LicenseEvent, {
+        license: followUp.license,
+        type: LicenseEventType.FOLLOW_UP_ACTIONED,
+        actor,
+        notes: `Action response submitted for condition "${followUp.title}"`,
+      });
+      await manager.save(LicenseEvent, event);
+
+      return saved;
+    });
+  }
+
+  /** Regulator reviews proof and marks condition as closed/resolved. */
+  async closeFollowUp(
+    regulator: Organization,
+    actor: User,
+    licenseId: number,
+    followUpId: number,
+    dto: CloseFollowUpDto,
+  ): Promise<LicenseFollowUp> {
+    requireRegulator(regulator);
+    return this.dataSource.transaction(async (manager) => {
+      const followUp = await manager.findOne(LicenseFollowUp, {
+        where: { id: followUpId, licenseId },
+        relations: ['license'],
+      });
+      if (!followUp) {
+        throw new NotFoundEntityException('License follow-up condition', followUpId);
+      }
+
+      followUp.closureNotes = dto.closureNotes ?? null;
+      followUp.closedBy = actor;
+      followUp.closedAt = new Date();
+      followUp.status = LicenseFollowUpStatus.CLOSED;
+
+      const saved = await manager.save(LicenseFollowUp, followUp);
+
+      const event = manager.create(LicenseEvent, {
+        license: followUp.license,
+        type: LicenseEventType.FOLLOW_UP_CLOSED,
+        actor,
+        notes: `Condition "${followUp.title}" verified and closed.${dto.closureNotes ? ` Notes: ${dto.closureNotes}` : ''}`,
+      });
+      await manager.save(LicenseEvent, event);
+
+      return saved;
+    });
+  }
+
+  // ── Token-based public response links ─────────────────────────────────────
+
+  /**
+   * Generates a secure token for a follow-up and emails the license holder
+   * with a link they can use to respond without logging in.
+   *
+   * If a valid (non-expired, unused) token already exists it is regenerated
+   * so the holder always gets a fresh link.
+   */
+  async sendFollowUpLink(
+    regulator: Organization,
+    actor: User,
+    licenseId: number,
+    followUpId: number,
+    dto: SendFollowUpLinkDto,
+  ): Promise<LicenseFollowUp> {
+    requireRegulator(regulator);
+
+    const followUp = await this.followUps.findOne({
+      where: { id: followUpId, licenseId },
+      relations: ['license', 'license.organization'],
+    });
+    if (!followUp) {
+      throw new NotFoundEntityException('License follow-up condition', followUpId);
+    }
+    if (followUp.status === LicenseFollowUpStatus.CLOSED) {
+      throw new TraceabilityRuleException(
+        'Cannot send a response link for a closed condition.',
+      );
+    }
+    if (followUp.responseTokenUsed) {
+      throw new TraceabilityRuleException(
+        'The holder has already submitted a response for this condition.',
+      );
+    }
+
+    const expiryDays = dto.expiryDays ?? 7;
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + expiryDays);
+
+    followUp.responseToken = randomUUID();
+    followUp.responseTokenExpiresAt = expiresAt;
+    followUp.responseTokenUsed = false;
+    const saved = await this.followUps.save(followUp);
+
+    const responseUrl = `${this.appPublicUrl}/apply/license-followup/${saved.responseToken}`;
+
+    // Email every user of the holder organization
+    const org = followUp.license.organization;
+    const staff = await this.dataSource
+      .getRepository(User)
+      .find({ where: { organization: { id: org.id } } });
+
+    await Promise.allSettled(
+      staff.map((user) => {
+        if (!user.email) return Promise.resolve();
+        return this.email
+          .sendLicenseFollowUpLink({
+            to: user.email,
+            licenseNumber: followUp.license.licenseNumber,
+            conditionTitle: followUp.title,
+            conditionDescription: followUp.description,
+            responseUrl,
+            expiresAt,
+          })
+          .catch(() => undefined);
+      }),
+    );
+
+    return saved;
+  }
+
+  /**
+   * Fetches a follow-up by its public response token. Returns enough data
+   * for the response page to render the condition and any previous response.
+   * Expired or used tokens render in read-only mode rather than hard-erroring.
+   */
+  async getFollowUpByToken(token: string): Promise<
+    LicenseFollowUp & {
+      licenseNumber: string;
+      organizationName: string;
+      readOnly: boolean;
+    }
+  > {
+    const followUp = await this.followUps.findOne({
+      where: { responseToken: token },
+      relations: ['license', 'license.organization', 'createdBy', 'actionedBy'],
+    });
+
+    if (!followUp) {
+      throw new TraceabilityRuleException('This link is invalid or does not exist.');
+    }
+
+    // Lazy-expire
+    const expired =
+      followUp.responseTokenExpiresAt != null &&
+      new Date() > followUp.responseTokenExpiresAt;
+
+    if (expired && !followUp.responseTokenUsed) {
+      throw new TraceabilityRuleException(
+        'This link has expired. Ask your regulatory officer to send a new one.',
+      );
+    }
+
+    return {
+      ...followUp,
+      licenseNumber: followUp.license.licenseNumber,
+      organizationName: followUp.license.organization.name,
+      readOnly: followUp.responseTokenUsed || followUp.status === LicenseFollowUpStatus.CLOSED,
+    };
+  }
+
+  /**
+   * Records the business response submitted through the public token link.
+   * Marks the token as used so it cannot be reused.
+   */
+  async actionFollowUpByToken(
+    token: string,
+    dto: PublicFollowUpResponseDto,
+    file?: UploadedFile,
+  ): Promise<void> {
+    const followUp = await this.followUps.findOne({
+      where: { responseToken: token },
+      relations: ['license', 'license.organization', 'createdBy'],
+    });
+
+    if (!followUp) {
+      throw new TraceabilityRuleException('This link is invalid or does not exist.');
+    }
+    if (followUp.responseTokenUsed) {
+      throw new TraceabilityRuleException('This link has already been used.');
+    }
+    if (
+      followUp.responseTokenExpiresAt != null &&
+      new Date() > followUp.responseTokenExpiresAt
+    ) {
+      throw new TraceabilityRuleException(
+        'This link has expired. Ask your regulatory officer to send a new one.',
+      );
+    }
+    if (followUp.status === LicenseFollowUpStatus.CLOSED) {
+      throw new TraceabilityRuleException(
+        'This condition is already closed — no response is needed.',
+      );
+    }
+
+    let attachmentKey: string | null = null;
+    let attachmentFilename: string | null = null;
+
+    if (file) {
+      const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+      if (!allowed.includes(file.mimetype)) {
+        throw new TraceabilityRuleException(
+          `${file.mimetype} is not accepted. Upload a PDF or image.`,
+        );
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        throw new TraceabilityRuleException('File exceeds the 5 MB limit.');
+      }
+      const stored = await this.storage.put({
+        folder: `licenses/${followUp.licenseId}/followups`,
+        filename: file.originalname,
+        contentType: file.mimetype,
+        content: file.buffer,
+      });
+      attachmentKey = stored.key;
+      attachmentFilename = file.originalname;
+    }
+
+    followUp.businessResponse = dto.businessResponse?.trim() ?? null;
+    if (attachmentKey) followUp.evidenceAttachmentKey = attachmentKey;
+    if (attachmentFilename) followUp.evidenceFilename = attachmentFilename;
+    followUp.actionedAt = new Date();
+    followUp.status = LicenseFollowUpStatus.ACTIONED;
+    followUp.responseTokenUsed = true;
+    await this.followUps.save(followUp);
+
+    // Notify regulators of the response
+    const regulatorOrgs = await this.dataSource
+      .getRepository(Organization)
+      .find({ where: { type: OrganizationType.REGULATOR } });
+
+    for (const rOrg of regulatorOrgs) {
+      const rStaff = await this.dataSource
+        .getRepository(User)
+        .find({ where: { organization: { id: rOrg.id } } });
+      await Promise.allSettled(
+        rStaff.map((u) => {
+          if (!u.email) return Promise.resolve();
+          return this.email
+            .sendLicenseFollowUpResponseReceived({
+              to: u.email,
+              licenseNumber: followUp.license.licenseNumber,
+              organizationName: followUp.license.organization.name,
+              conditionTitle: followUp.title,
+              dashboardUrl: `${this.appPublicUrl}/dashboard/regulator`,
+            })
+            .catch(() => undefined);
+        }),
+      );
+    }
   }
 }
 

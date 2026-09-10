@@ -101,6 +101,13 @@ function service(organization: Record<string, unknown> | null) {
     find: jest.fn().mockResolvedValue([]),
   };
 
+  const infoRequests = {
+    findOne: jest.fn(),
+    find: jest.fn().mockResolvedValue([]),
+    save: jest.fn(),
+    create: jest.fn((obj) => obj),
+  };
+
   return {
     instance: new OrganizationService(
       organizations as never,
@@ -110,6 +117,7 @@ function service(organization: Record<string, unknown> | null) {
       documents as never,
       owners as never,
       regulatoryAuthorities as never,
+      infoRequests as never,
       storage as never,
       sites as never,
       licenses as never,

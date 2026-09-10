@@ -159,7 +159,9 @@ import {
   RegistrationConsultationController,
   RegistrationConsultationInboxController,
 } from './organization/controllers/registration-consultation.controller';
+import { PublicRegistrationResponseController } from './organization/controllers/public-registration-response.controller';
 import { Organization } from './organization/entities/organization.entity';
+import { RegistrationInfoRequest } from './organization/entities/registration-info-request.entity';
 import { OrganizationService } from './organization/services/organization.service';
 import { FacilityService } from './organization/services/facility.service';
 import { RegistrationConsultation } from './organization/entities/registration-consultation.entity';
@@ -169,14 +171,23 @@ import { ProductController } from './product/controllers/product.controller';
 import { BrandController } from './product/controllers/brand.controller';
 import { ProductCategoryController } from './product/controllers/product-category.controller';
 import { PublicCategoryController } from './product/controllers/public-category.controller';
+import { ProductRegistrationController } from './product/controllers/product-registration.controller';
 import { CategoryShareService } from './product/services/category-share.service';
 import { Product } from './product/entities/product.entity';
+import { ProductCategory } from './product/entities/product-category.entity';
+import {
+  ProductRegistration,
+  ProductRegistrationDocument,
+  ProductRegistrationEvent,
+} from './product/entities/product-registration.entity';
 import { ProductService } from './product/services/product.service';
+import { ProductRegistrationService } from './product/services/product-registration.service';
 
 import {
   LicenseController,
   LicenseReviewController,
 } from './licensing/controllers/license.controller';
+import { PublicLicenseFollowUpController } from './licensing/controllers/public-license-followup.controller';
 import { ProductionEligibilityController } from './licensing/controllers/production-eligibility.controller';
 import { ComplianceOverviewController } from './licensing/controllers/compliance-overview.controller';
 import { RegulatoryCaseController } from './licensing/controllers/regulatory-case.controller';
@@ -253,14 +264,6 @@ import { RedisCacheService } from './cache/redis-cache.service';
 import { SearchController } from './search/search.controller';
 import { SearchService } from './search/search.service';
 
-/**
- * A modular monolith, one module per bounded concern, exactly as the technical
- * proposal's section 13 application layer describes. They are wired together
- * here rather than split into services: the domain is one transactional
- * story - a scan changes an item, appends an event and moves stock together -
- * and splitting that across process boundaries would buy nothing but
- * distributed transactions.
- */
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, load: [configuration] }),
@@ -314,10 +317,12 @@ import { SearchService } from './search/search.service';
     FacilityController,
     RegistrationConsultationController,
     RegistrationConsultationInboxController,
+    PublicRegistrationResponseController,
     LocationController,
     ProductController,
     ProductCategoryController,
     PublicCategoryController,
+    ProductRegistrationController,
     BrandController,
     BatchController,
     IdentityPoolController,
@@ -335,6 +340,7 @@ import { SearchService } from './search/search.service';
     DashboardController,
     LicenseController,
     LicenseReviewController,
+    PublicLicenseFollowUpController,
     ProductionEligibilityController,
     ComplianceOverviewController,
     RegulatoryCaseController,
@@ -405,6 +411,7 @@ import { SearchService } from './search/search.service';
     RegistrationConsultationService,
     LocationService,
     ProductService,
+    ProductRegistrationService,
     CategoryShareService,
     BatchService,
     ItemCodeGenerator,
@@ -475,4 +482,4 @@ import { SearchService } from './search/search.service';
 })
 export class AppModule {}
 
-export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog, RegulatoryAuthority, RegistrationConsultation };
+export { User, Organization, Location, Product, ProductCategory, ProductRegistration, ProductRegistrationDocument, ProductRegistrationEvent, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog, RegulatoryAuthority, RegistrationConsultation };

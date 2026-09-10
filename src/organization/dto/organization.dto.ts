@@ -207,6 +207,53 @@ export class AmendOrganizationDto {
   registrationNumber?: string;
 }
 
+// ── Registration information-request DTOs ─────────────────────────────────
+
+export class RequestedFieldDto {
+  @IsString()
+  @MinLength(1)
+  key: string;
+
+  @IsString()
+  @MinLength(1)
+  label: string;
+
+  @IsIn(['text', 'file'])
+  type: 'text' | 'file';
+
+  @IsOptional()
+  required?: boolean;
+}
+
+export class CreateInfoRequestDto {
+  @IsString()
+  @MinLength(10, { message: 'Provide a clear explanation of what is required' })
+  @MaxLength(2000)
+  requestMessage: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RequestedFieldDto)
+  requestedFields?: RequestedFieldDto[];
+
+  /**
+   * How many days until the token expires. Defaults to 7 days.
+   * Maximum 30 days.
+   */
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  @Max(30)
+  expiryDays?: number;
+}
+
+/** The applicant's text responses keyed by field key. */
+export class RespondToInfoRequestDto {
+  @IsOptional()
+  responseData?: Record<string, string>;
+}
+
 /** Platform-operator action, not part of onboarding. */
 export class GrantRegulatoryStandingDto {
   @IsEnum(OrganizationType)
