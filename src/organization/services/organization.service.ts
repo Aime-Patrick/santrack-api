@@ -9,6 +9,7 @@ import {
   NotFoundEntityException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { RegulatoryAuthority } from '../../licensing/entities/regulatory-authority.entity';
 import { LicenseService } from '../../licensing/services/license.service';
 import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { NotificationType } from '../../notifications/entities/notification.entity';
@@ -77,6 +78,8 @@ export class OrganizationService {
     private readonly documents: Repository<OrganizationDocument>,
     @InjectRepository(OrganizationOwner)
     private readonly owners: Repository<OrganizationOwner>,
+    @InjectRepository(RegulatoryAuthority)
+    private readonly regulatoryAuthorities: Repository<RegulatoryAuthority>,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
     private readonly sites: FacilityService,
@@ -93,23 +96,12 @@ export class OrganizationService {
   }
 
   private readonly appPublicUrl: string;
-
-  /**
-   * Onboarding: the caller creates the business they act for and is attached
-   * to it. One organization per user - a person who moves between businesses
-   * gets a new account there, because the chain of custody records which
-   * business acted, and an ambiguous actor would undermine that.
-   */
   async create(actor: User, dto: CreateOrganizationDto): Promise<Organization> {
     if (actor.organization) {
       throw new TraceabilityRuleException(
         `You already act for ${actor.organization.name}`,
       );
     }
-
-    // Belt and braces: the DTO already rejects non-self-declarable types, but
-    // this is the boundary that actually matters, so it does not rely on a
-    // validator staying correct.
     if (!isSelfDeclarable(dto.type)) {
       throw new TraceabilityRuleException(
         `${dto.type} standing is granted by the platform, not chosen at sign-up`,
@@ -137,14 +129,10 @@ export class OrganizationService {
         sector: dto.sector?.trim() || null,
         cell: dto.cell?.trim() || null,
         village: dto.village?.trim() || null,
-        // A registration is an application, not a grant: no licence is issued
-        // until a regulator approves it (Digital Tax Stamp flow).
+        industrySector: dto.industrySector ?? null,
         onboardingStatus: OnboardingStatus.PENDING,
       }),
     );
-
-    // Ownership is part of the registration record (ownership transparency the
-    // regulator screens against), not something attached later.
     if (dto.ownership && dto.ownership.length > 0) {
       await this.owners.save(
         dto.ownership.map((owner) =>
@@ -160,32 +148,17 @@ export class OrganizationService {
         ),
       );
     }
-
-    /**
-     * Every organization gets a site (DR-02).
-     *
-     * The migration backfilled one for each business that already existed, and
-     * without this new ones would be the only organizations that could not
-     * answer "which facility produced this batch?" — the guarantee would hold
-     * for historic data and quietly lapse for everything created afterwards.
-     *
-     * Named after the organization, the same way the backfill named them, so a
-     * single-site business never has to think about it.
-     */
-    // Inside a transaction because the code counter takes a pessimistic lock,
-    // which Postgres will not grant outside one - and because two people
-    // onboarding at the same moment must not be handed the same site code.
-    //
-    // The site itself is minted by FacilityService, which is also what the
-    // facilities endpoint calls. Onboarding used to draw its own FAC- number
-    // inline, so there were two implementations of how a site is created and
-    // coded; they agreed, until they would not have.
     await this.facilities.manager.transaction((manager) =>
       this.sites.openWithin(manager, organization, `${name} — main site`),
     );
 
     actor.organization = organization;
     await this.users.save(actor);
+    void this.routeToAuthority(organization).catch((err: Error) =>
+      this.logger.warn(
+        `Sector routing for ${organization.name} failed silently: ${err.message}`,
+      ),
+    );
 
     await this.notifications.sendToUser(actor.id, {
       type: NotificationType.INFO,
@@ -206,31 +179,16 @@ export class OrganizationService {
 
     return organization;
   }
-
-  // -------------------------------------------------- registration review
-
-  /**
-   * Self-registrations awaiting a regulator's decision, oldest first, with
-   * their declared owners attached so the review screen is one read.
-   *
-   * Regulator-only: callers reach it through the DECIDE_LICENCES gate, the
-   * same one that guards licence screening.
-   */
   async pendingRegistrations(): Promise<Organization[]> {
     return this.organizations.find({
-      where: { onboardingStatus: OnboardingStatus.PENDING },
+      where: [
+        { onboardingStatus: OnboardingStatus.PENDING },
+        { onboardingStatus: OnboardingStatus.CHANGES_REQUESTED },
+      ],
       relations: { owners: true },
       order: { createdAt: 'ASC' },
     });
   }
-
-  /**
-   * The regulator's verdict on a registration application.
-   *
-   * Approving activates the business and issues its operating licence; the
-   * licence issuance is deliberately not allowed to fail the decision.
-   * Rejecting records why, so the applicant can fix it and reapply.
-   */
   async decideRegistration(
     regulator: Organization,
     actor: User,
@@ -249,7 +207,11 @@ export class OrganizationService {
     if (!organization) {
       throw new NotFoundEntityException('Organization', organizationId);
     }
-    if (organization.onboardingStatus !== OnboardingStatus.PENDING) {
+    const decidable: OnboardingStatus[] = [
+      OnboardingStatus.PENDING,
+      OnboardingStatus.CHANGES_REQUESTED,
+    ];
+    if (!decidable.includes(organization.onboardingStatus)) {
       throw new TraceabilityRuleException(
         `${organization.name}'s registration is already ${organization.onboardingStatus.toLowerCase()}`,
       );
@@ -263,17 +225,33 @@ export class OrganizationService {
       }
       organization.onboardingStatus = OnboardingStatus.REJECTED;
       organization.rejectionReason = dto.reason.trim();
+      organization.reviewNote = null;
       const saved = await this.organizations.save(organization);
       void this.notifyRegistrationDecision(saved, actor, 'REJECTED');
       return saved;
     }
 
+    if (dto.decision === 'REQUEST_CHANGES') {
+      if (!dto.reason?.trim()) {
+        throw new TraceabilityRuleException(
+          'Requesting changes needs a note — the applicant has to know what to provide',
+        );
+      }
+      organization.onboardingStatus = OnboardingStatus.CHANGES_REQUESTED;
+      organization.reviewNote = dto.reason.trim();
+      organization.rejectionReason = null;
+      const saved = await this.organizations.save(organization);
+      void this.notifyRegistrationDecision(saved, actor, 'CHANGES_REQUESTED');
+      return saved;
+    }
+
+    // APPROVE
     organization.onboardingStatus = OnboardingStatus.APPROVED;
     organization.rejectionReason = null;
+    organization.reviewNote = null;
     const saved = await this.organizations.save(organization);
 
-    // Fire-and-forget like the licence service's own notification path: a
-    // licensing problem must not roll back an approval that is already saved.
+    // Fire-and-forget: a licensing problem must not roll back an approval.
     void this.licenses
       .issueOnApproval(saved, regulator, actor)
       .then(() => this.notifyRegistrationDecision(saved, actor, 'APPROVED'))
@@ -285,20 +263,73 @@ export class OrganizationService {
     return saved;
   }
 
-  /** Every user attached to an organization. */
+  async resubmitRegistration(
+    actor: User,
+    organization: Organization,
+  ): Promise<Organization> {
+    if (organization.onboardingStatus !== OnboardingStatus.CHANGES_REQUESTED) {
+      throw new TraceabilityRuleException(
+        `${organization.name}'s registration is ${organization.onboardingStatus.toLowerCase()} — only a CHANGES_REQUESTED application can be resubmitted`,
+      );
+    }
+
+    organization.onboardingStatus = OnboardingStatus.PENDING;
+    organization.reviewNote = null;
+    const saved = await this.organizations.save(organization);
+
+    await this.notifications.sendToUser(actor.id, {
+      type: NotificationType.INFO,
+      title: 'Registration resubmitted',
+      message:
+        `${organization.name} has been resubmitted for review. ` +
+        'You will be notified once a decision is made.',
+      module: 'compliance',
+      actionUrl: '/dashboard',
+    });
+
+    return saved;
+  }
+
+  private async routeToAuthority(organization: Organization): Promise<void> {
+    const authority = await this.resolveAuthorityForSector(organization.industrySector);
+    if (!authority?.operatingOrganization) return;
+
+    const staff = await this.staffOf(authority.operatingOrganization.id);
+    await Promise.allSettled(
+      staff.map((user) =>
+        this.notifications.sendToUser(user.id, {
+          type: NotificationType.INFO,
+          title: 'New registration application',
+          message:
+            `${organization.name} has submitted a registration application` +
+            (organization.industrySector
+              ? ` in the ${organization.industrySector.replace(/_/g, ' ').toLowerCase()} sector`
+              : '') +
+            '. Review it from the pending registrations queue.',
+          module: 'compliance',
+          actionUrl: '/dashboard/regulator',
+        }),
+      ),
+    );
+  }
+
+  private async resolveAuthorityForSector(sector: string | null): Promise<RegulatoryAuthority | null> {
+    const active = await this.regulatoryAuthorities.find({ where: { isActive: true }, order: { id: 'ASC' } });
+    if (active.length === 0) return null;
+    if (sector) {
+      const match = active.find((a) => a.mandates.includes(sector));
+      if (match) return match;
+    }
+    return active[0];
+  }
+
   private async staffOf(organizationId: number): Promise<User[]> {
     return this.users.find({ where: { organization: { id: organizationId } } });
   }
-
-  /**
-   * Tells everyone at an approved/rejected business what happened - an in-app
-   * notification for each staff member and an email per address. Fire and
-   * forget; email failures are logged, not thrown.
-   */
   private async notifyRegistrationDecision(
     organization: Organization,
     regulator: User,
-    outcome: 'APPROVED' | 'REJECTED',
+    outcome: 'APPROVED' | 'REJECTED' | 'CHANGES_REQUESTED',
   ): Promise<void> {
     const staff = await this.staffOf(organization.id);
     await Promise.allSettled(
@@ -316,6 +347,26 @@ export class OrganizationService {
               .sendRegistrationApproved({
                 to: user.email,
                 companyName: organization.name,
+                loginUrl: `${this.appPublicUrl}/login`,
+              })
+              .catch(() => undefined);
+          }
+        } else if (outcome === 'CHANGES_REQUESTED') {
+          await this.notifications.sendToUser(user.id, {
+            type: NotificationType.WARNING,
+            title: 'Changes requested on your registration',
+            message:
+              `A regulator has reviewed ${organization.name}'s registration and ` +
+              `needs some changes before approval. Sign in to see what's required.`,
+            module: 'compliance',
+            actionUrl: '/dashboard',
+          });
+          if (user.email) {
+            await this.email
+              .sendRegistrationChangesRequested({
+                to: user.email,
+                companyName: organization.name,
+                note: organization.reviewNote ?? 'Please check your registration for details.',
                 loginUrl: `${this.appPublicUrl}/login`,
               })
               .catch(() => undefined);
@@ -344,13 +395,6 @@ export class OrganizationService {
     );
   }
 
-  // ------------------------------------------------- registration documents
-
-  /**
-   * Files a certificate against a registration application (RDB certificate,
-   * FDA premise certificate, import licence...). Only the applying
-   * organization may attach while its application is still pending.
-   */
   async attachDocument(
     organization: Organization,
     documentType: string,
@@ -369,8 +413,6 @@ export class OrganizationService {
       );
     }
 
-    // Stored before the row is written: an orphaned object costs disk, whereas
-    // a row pointing at bytes that were never written is a broken download.
     const stored = await this.storage.put({
       folder: `organizations/${organization.id}/documents`,
       filename: file.originalname,
@@ -393,22 +435,21 @@ export class OrganizationService {
     );
   }
 
-  /**
-   * The certificates filed against a registration. The applicant may read its
-   * own; a licensing authority may read any, which is what screening needs.
-   */
-  async documentsFor(reader: Organization, organizationId: number) {
+  async documentsFor(reader: Organization | null, organizationId: number) {
     const target = await this.organizations.findOne({
       where: { id: organizationId },
     });
     if (!target) {
       throw new NotFoundEntityException('Organization', organizationId);
     }
-    const own = target.id === reader.id;
-    if (!own && reader.type !== OrganizationType.REGULATOR) {
-      throw new TraceabilityRuleException(
-        "Another business's registration documents are for the licensing authority",
-      );
+    // null reader = SYSTEM_ADMIN with no organization — platform-wide access.
+    if (reader !== null) {
+      const own = target.id === reader.id;
+      if (!own && reader.type !== OrganizationType.REGULATOR) {
+        throw new TraceabilityRuleException(
+          "Another business's registration documents are for the licensing authority",
+        );
+      }
     }
 
     return this.documents.find({
@@ -417,7 +458,6 @@ export class OrganizationService {
     });
   }
 
-  /** Streams a filed certificate back. Holder and regulators only. */
   async readDocument(
     reader: Organization,
     documentId: number,
@@ -434,17 +474,6 @@ export class OrganizationService {
     }
     return { document, content: await this.storage.get(document.storageKey) };
   }
-
-  /**
-   * The directory of trading partners: who you can dispatch to or sell to.
-   * Names and types only - never another organization's stock or history.
-   *
-   * `types` narrows it. The unfiltered list mixes oversight bodies in with
-   * businesses, which is wrong in both directions: a regulator is not somebody
-   * you dispatch stock to, and a page about regulators should not be showing
-   * every shop on the platform. Filtering here rather than in the browser
-   * keeps the payload proportionate to what the caller asked for.
-   */
   async list(types?: OrganizationType[]): Promise<Organization[]> {
     return this.organizations.find({
       where: types && types.length > 0 ? { type: In(types) } : {},
@@ -452,22 +481,6 @@ export class OrganizationService {
     });
   }
 
-  /**
-   * The supervisory view of the businesses on the platform: who is registered,
-   * how many people work there, how much catalogue they carry, and where their
-   * licences stand.
-   *
-   * Deliberately not the same call as `list`. That one answers "who can I
-   * dispatch to?" and every signed-in user needs it; this one answers "who is
-   * operating in this industry and are they compliant?", which proposal
-   * section 3 places with the licensing authorities and the platform operator.
-   * Two questions, two capabilities - and the trading-partner picker does not
-   * become a back door into the register.
-   *
-   * Oversight bodies are excluded: a regulator is an authority, not an
-   * industry, and listing the authorities among the businesses they supervise
-   * is what `listRegulators` is for.
-   */
   async registry(): Promise<RegistryEntry[]> {
     const businesses = await this.organizations.find({
       where: { type: In(SELF_DECLARABLE_TYPES as OrganizationType[]) },
@@ -496,13 +509,6 @@ export class OrganizationService {
     );
   }
 
-  /**
-   * Corrects a registry entry. Platform operators only.
-   *
-   * Type changes are restricted to the business types: moving an organization
-   * into or out of REGULATOR is granting or withdrawing standing, which has
-   * its own routes because it carries consequences a rename does not.
-   */
   async amend(
     organizationId: number,
     changes: {
@@ -555,19 +561,6 @@ export class OrganizationService {
     return this.organizations.save(organization);
   }
 
-  /**
-   * Registers an oversight body. Platform operators only, for the same reason
-   * `grantRegulatoryStanding` is: this organization will read every timeline
-   * on the platform and can recall any manufacturer's batch.
-   *
-   * Unlike onboarding, the caller is not attached to it. The operator standing
-   * up a regulator is not joining that regulator, and staff arrive afterwards
-   * through user management.
-   *
-   * No provisional licence is issued either. Licensing governs who may trade;
-   * an authority does not trade, and giving it a licence to lapse would put a
-   * compliance finding against the body that reads them.
-   */
   async registerRegulator(name: string): Promise<Organization> {
     const trimmed = name.trim();
     if (await this.organizations.findOne({ where: { name: trimmed } })) {
@@ -578,8 +571,6 @@ export class OrganizationService {
       this.organizations.create({
         name: trimmed,
         type: OrganizationType.REGULATOR,
-        // Platform-registered authorities skip the business application flow;
-        // they are approved by the operator who stood them up.
         onboardingStatus: OnboardingStatus.APPROVED,
       }),
     );
@@ -602,17 +593,6 @@ export class OrganizationService {
     );
   }
 
-  /**
-   * Withdraws regulatory standing, returning the organization to an ordinary
-   * business type.
-   *
-   * Standing is the type, so withdrawing it has to say what the organization
-   * becomes - see `RevokeRegulatoryStandingDto`. A body registered as a
-   * regulator from the start has no earlier business identity to return to,
-   * and reverting it leaves a business record nobody registered; that is the
-   * operator's call to make knowingly, which is why the target is stated
-   * rather than inferred.
-   */
   async revokeRegulatoryStanding(
     organizationId: number,
     revertTo: OrganizationType,
@@ -638,17 +618,6 @@ export class OrganizationService {
     return this.organizations.save(organization);
   }
 
-  /**
-   * Confers regulatory standing on an organization. Reserved to the platform
-   * operator, because a regulator reads every timeline on the platform,
-   * sees consumer information and can recall any manufacturer's batch.
-   *
-   * This is the bootstrap for the regulatory layer: the first regulator has to
-   * be granted by someone already trusted, since there is no regulator yet to
-   * approve them. Once the licensing module lands, this becomes the narrow
-   * path used only to seed the first authority - everyone else arrives through
-   * an application that a regulator reviews.
-   */
   async grantRegulatoryStanding(organizationId: number): Promise<Organization> {
     const organization = await this.organizations.findOne({
       where: { id: organizationId },
@@ -658,10 +627,78 @@ export class OrganizationService {
     }
 
     organization.type = OrganizationType.REGULATOR;
-    // If a PENDING business was ever promoted, its registration is now moot -
-    // standing was granted by the platform, which is the approval.
     organization.onboardingStatus = OnboardingStatus.APPROVED;
     organization.rejectionReason = null;
     return this.organizations.save(organization);
+  }
+  async purge(organizationId: number): Promise<void> {
+    const organization = await this.organizations.findOne({
+      where: { id: organizationId },
+    });
+    if (!organization) {
+      throw new NotFoundEntityException('Organization', organizationId);
+    }
+
+    const userCount = await this.users.count({
+      where: { organization: { id: organizationId } },
+    });
+    if (userCount > 0) {
+      throw new TraceabilityRuleException(
+        `${organization.name} still has ${userCount} user(s) attached — remove them before deleting`,
+      );
+    }
+
+    const productCount = await this.products.count({
+      where: { organizationId },
+    });
+    if (productCount > 0) {
+      throw new TraceabilityRuleException(
+        `${organization.name} has ${productCount} product(s) on the platform — remove them before deleting`,
+      );
+    }
+
+    const authorityCount = await this.regulatoryAuthorities.count({
+      where: { operatingOrganization: { id: organizationId } },
+    });
+    if (authorityCount > 0) {
+      throw new TraceabilityRuleException(
+        `${organization.name} is linked to a regulatory authority — unlink it from the Regulators page before deleting`,
+      );
+    }
+
+    const em = this.organizations.manager;
+    const nullUpdates: Array<{ table: string; column: string }> = [
+      // licenses: the regulator that issued a licence
+      { table: 'licenses',            column: 'issued_by_organization_id' },
+      // traceability events: source and destination org on a movement
+      { table: 'traceability_events', column: 'source_organization_id' },
+      { table: 'traceability_events', column: 'destination_organization_id' },
+      // audit log actor org
+      { table: 'audit_logs',          column: 'organization_id' },
+      // shipments: destination org (nullable)
+      { table: 'shipments',           column: 'destination_organization_id' },
+      // sales: buyer org (nullable)
+      { table: 'sales',               column: 'buyer_organization_id' },
+      // batch manufacturer (nullable)
+      { table: 'batches',             column: 'manufacturer_id' },
+      // item holder (nullable)
+      { table: 'traceable_items',     column: 'holder_id' },
+      // supplier linked org (nullable)
+      { table: 'suppliers',           column: 'linked_organization_id' },
+      // customer buyer org (nullable)
+      { table: 'customers',           column: 'buyer_organization_id' },
+    ];
+    for (const { table, column } of nullUpdates) {
+      await em.query(
+        `UPDATE "${table}" SET "${column}" = NULL WHERE "${column}" = $1`,
+        [organizationId],
+      );
+    }
+
+    // Cascade order: owned rows first, then the parent org row.
+    await this.documents.delete({ organizationId });
+    await this.owners.delete({ organizationId });
+    await this.sites.deleteFor(organizationId);
+    await this.organizations.delete(organizationId);
   }
 }

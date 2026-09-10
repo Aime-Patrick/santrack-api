@@ -10,6 +10,7 @@ import {
   NotVisibleException,
   TraceabilityRuleException,
 } from '../../common/errors';
+import { OrganizationType } from '../../organization/organization-type.enum';
 import { permitsIdentityAssignment } from '../../batch/batch-status.enum';
 import { Batch } from '../../batch/entities/batch.entity';
 import { Location } from '../../location/entities/location.entity';
@@ -522,6 +523,7 @@ export class ItemService {
     dto: PackDto,
   ): Promise<TraceableItem> {
     await this.recorder.rejectReplay(dto.meta);
+    requireNotAutomaticStockInOrg(organization);
 
     return this.dataSource.transaction(async (manager) => {
       const container = await this.require(containerQr, manager);
@@ -588,6 +590,7 @@ export class ItemService {
     dto?: ScanDto,
   ): Promise<TraceableItem> {
     await this.recorder.rejectReplay(dto?.meta);
+    requireNotAutomaticStockInOrg(organization);
 
     return this.dataSource.transaction(async (manager) => {
       const container = await this.require(containerQr, manager);
@@ -627,6 +630,7 @@ export class ItemService {
     dto: RemoveUnitDto,
   ): Promise<TraceableItem> {
     await this.recorder.rejectReplay(dto.meta);
+    requireNotAutomaticStockInOrg(organization);
 
     return this.dataSource.transaction(async (manager) => {
       const container = await this.require(containerQr, manager);
@@ -816,6 +820,25 @@ export class ItemService {
 export function requirePackage(item: TraceableItem): void {
   if (!item.isPackage()) {
     throw new TraceabilityRuleException(`${item.code} is a unit, not a container`);
+  }
+}
+
+/**
+ * RETAILER and SHOP must not invoke manual packaging operations directly.
+ * Their packaging work is done automatically by StockInService.
+ *
+ * Keeping this check in the service layer means the restriction cannot be
+ * bypassed by calling the endpoint without going through the controller.
+ */
+export function requireNotAutomaticStockInOrg(organization: Organization): void {
+  if (
+    organization.type === OrganizationType.RETAILER ||
+    organization.type === OrganizationType.SHOP
+  ) {
+    throw new TraceabilityRuleException(
+      'RETAILER and SHOP organisations do not perform manual packaging operations. ' +
+        'Use the Stock In workflow to receive containers automatically.',
+    );
   }
 }
 

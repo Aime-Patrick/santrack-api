@@ -35,11 +35,20 @@ export class RegulatoryAuthorityController {
     };
   }
 
+  /**
+   * Returns the caller's authority profile, or null when the org has not yet
+   * been linked to an authority row. Returns null rather than 404 because this
+   * is a self-query ("what am I?"), not a lookup of a known entity — the
+   * frontend uses the null to show a "not yet configured" state without an
+   * error.
+   */
   @Get('me/profile')
   @RequireCapability(Capability.MANAGE_USERS)
   async mine(@ActingOrg() organization: Organization, @CurrentUser() actor: User) {
     requireAuthorityAdmin(actor);
-    return describe(await this.authorities.forOrganization(organization));
+    const authority = await this.authorities.findForOrganization(organization);
+    if (!authority) return null;
+    return describe(authority);
   }
 
   @Patch('me/profile')

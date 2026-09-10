@@ -225,25 +225,25 @@ describe('capabilities conferred by regulatory standing', () => {
 
   it('confers no write capability a role does not already hold', () => {
     // Standing widens what you can see, never what you can do. It adds the
-    // industry registry and the platform audit log - both reads.
+    // industry registry; the platform audit log stays with the operator.
     const auditorAtRegulator = capabilitiesFor(UserRole.AUDITOR, OrganizationType.REGULATOR);
     expect(auditorAtRegulator).toEqual([
       Capability.VIEW_OPERATIONS,
       Capability.OVERSEE_INDUSTRIES,
-      Capability.READ_AUDIT,
     ]);
   });
 
-  it('gives a licensing authority the platform audit log but no registry write', () => {
-    // The regulator reads who did what across the platform, but does not
-    // create registry entries - that stays with the operator unless a
-    // specific officer is granted it.
+  it('gives a licensing authority supervision reads but not platform telemetry', () => {
+    // The regulator oversees the industry registry but does not read the
+    // platform-wide audit log: HTTP paths and IPs are operator telemetry,
+    // and regulatory accountability is served by the ledger instead.
     const regulatorAdmin = capabilitiesFor(
       UserRole.ORG_ADMIN,
       OrganizationType.REGULATOR,
     );
-    expect(regulatorAdmin).toContain(Capability.READ_AUDIT);
+    expect(regulatorAdmin).not.toContain(Capability.READ_AUDIT);
     expect(regulatorAdmin).not.toContain(Capability.MANAGE_INDUSTRIES);
+    expect(regulatorAdmin).toContain(Capability.OVERSEE_INDUSTRIES);
   });
 
   it('merges per-user grants outside the organization ceiling', () => {

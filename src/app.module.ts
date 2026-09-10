@@ -31,12 +31,16 @@ import { InventoryService } from './inventory/services/inventory.service';
 
 import { IdentityPoolController } from './item/controllers/identity-pool.controller';
 import { ItemController } from './item/controllers/item.controller';
+import { LabelPrintJobController } from './item/controllers/label-print-job.controller';
+import { StockInController } from './item/controllers/stock-in.controller';
 import { CodeSequence } from './item/entities/code-sequence.entity';
 import { TraceableItem } from './item/entities/traceable-item.entity';
 import { IdentityPoolService } from './item/services/identity-pool.service';
 import { ItemCodeGenerator } from './item/services/item-code-generator.service';
 import { ItemService } from './item/services/item.service';
 import { LifecycleService } from './item/services/lifecycle.service';
+import { LabelPrintJobService } from './item/services/label-print-job.service';
+import { StockInService } from './item/services/stock-in.service';
 
 import { LocationController } from './location/controllers/location.controller';
 import { Location } from './location/entities/location.entity';
@@ -151,9 +155,15 @@ import { VehicleService } from './logistics/services/vehicle.service';
 
 import { FacilityController } from './organization/controllers/facility.controller';
 import { OrganizationController } from './organization/controllers/organization.controller';
+import {
+  RegistrationConsultationController,
+  RegistrationConsultationInboxController,
+} from './organization/controllers/registration-consultation.controller';
 import { Organization } from './organization/entities/organization.entity';
 import { OrganizationService } from './organization/services/organization.service';
 import { FacilityService } from './organization/services/facility.service';
+import { RegistrationConsultation } from './organization/entities/registration-consultation.entity';
+import { RegistrationConsultationService } from './organization/services/registration-consultation.service';
 
 import { ProductController } from './product/controllers/product.controller';
 import { BrandController } from './product/controllers/brand.controller';
@@ -194,6 +204,8 @@ import { RegulatoryOversightService } from './licensing/services/regulatory-over
 import { RegulatoryAuthority } from './licensing/entities/regulatory-authority.entity';
 import { SequenceService } from './common/sequence.service';
 import { StorageModule } from './storage/storage.module';
+import { AnnouncementController } from './announcements/controllers/announcement.controller';
+import { AnnouncementService } from './announcements/services/announcement.service';
 import { BarcodeController } from './barcode/barcode.controller';
 import { ScanController } from './scan/scan.controller';
 import { ScanService } from './scan/scan.service';
@@ -293,12 +305,15 @@ import { SearchService } from './search/search.service';
   ],
   controllers: [
     HealthController,
+    AnnouncementController,
     AuthController,
     BarcodeController,
     ScanController,
     UserController,
     OrganizationController,
     FacilityController,
+    RegistrationConsultationController,
+    RegistrationConsultationInboxController,
     LocationController,
     ProductController,
     ProductCategoryController,
@@ -307,6 +322,8 @@ import { SearchService } from './search/search.service';
     BatchController,
     IdentityPoolController,
     ItemController,
+    LabelPrintJobController,
+    StockInController,
     InventoryController,
     TransferController,
     SyncController,
@@ -380,10 +397,12 @@ import { SearchService } from './search/search.service';
 
     RedisCacheService,
     SearchService,
+    AnnouncementService,
     AuthService,
     UserManagementService,
     OrganizationService,
     FacilityService,
+    RegistrationConsultationService,
     LocationService,
     ProductService,
     CategoryShareService,
@@ -392,6 +411,8 @@ import { SearchService } from './search/search.service';
     IdentityPoolService,
     ItemService,
     LifecycleService,
+    LabelPrintJobService,
+    StockInService,
     BarcodeService,
     ScanService,
     QrCodeService,
@@ -454,4 +475,4 @@ import { SearchService } from './search/search.service';
 })
 export class AppModule {}
 
-export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog, RegulatoryAuthority };
+export { User, Organization, Location, Product, Batch, TraceableItem, CodeSequence, TraceabilityEvent, Transfer, TransferLine, Sale, SaleLine, RawMaterial, BillOfMaterial, BillOfMaterialLine, Machine, ProductionOrder, ProductionOrderMaterial, ProductionEvent, QualityInspection, Transporter, Vehicle, Driver, Route, Shipment, ShipmentEvent, Customer, Quotation, QuotationLine, SalesOrder, SalesOrderLine, SalesOrderReservation, Invoice, Payment, SalesReturn, Supplier, PurchaseOrder, PurchaseOrderLine, Account, CostCentre, JournalEntry, JournalLine, Budget, Department, JobPosition, Employee, EmployeePayItem, Attendance, Leave, PayrollRun, PayrollLine, AuditLog, RegulatoryAuthority, RegistrationConsultation };

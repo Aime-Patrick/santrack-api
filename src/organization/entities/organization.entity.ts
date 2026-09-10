@@ -8,7 +8,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { OrganizationType } from '../organization-type.enum';
-import { OnboardingStatus } from '../onboarding-status.enum';
+import { OnboardingStatus, IndustrySector } from '../onboarding-status.enum';
 import { OrganizationOwner } from './organization-owner.entity';
 
 /** A participating business or entity in the traceability chain. */
@@ -72,6 +72,20 @@ export class Organization {
   // ── Registration approval (Digital Tax Stamp flow) ──
 
   /**
+   * The sector this business operates in. Captured at registration so the
+   * platform can route the application to the right regulatory authority
+   * (Rwanda FDA for pharma/food, RSB for general manufacturing, RMB for
+   * minerals, NAEB for agricultural exports, etc.).
+   */
+  @Column({
+    name: 'industry_sector',
+    type: 'enum',
+    enum: IndustrySector,
+    nullable: true,
+  })
+  industrySector: IndustrySector | null;
+
+  /**
    * New self-registrations land as PENDING and stay there until a regulator
    * approves or rejects them. No licence is issued while pending.
    */
@@ -92,6 +106,19 @@ export class Organization {
     nullable: true,
   })
   rejectionReason: string | null;
+
+  /**
+   * The regulator's note when requesting changes. Shown to the applicant on
+   * their status screen so they know exactly what to fix before resubmitting.
+   * Cleared when the applicant resubmits (status returns to PENDING).
+   */
+  @Column({
+    name: 'review_note',
+    type: 'varchar',
+    length: 1000,
+    nullable: true,
+  })
+  reviewNote: string | null;
 
   /** Declared owners, filed with the registration application. */
   @OneToMany(() => OrganizationOwner, (owner) => owner.organization)

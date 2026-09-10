@@ -17,9 +17,9 @@
     "migration:run": "typeorm-ts-node-commonjs migration:run -d src/config/data-source.ts",
     "migration:revert": "typeorm-ts-node-commonjs migration:revert -d src/config/data-source.ts",
     "db:setup": "node scripts/setup-db.mjs",
-    "walkthrough": "node ../stock-api/scripts/traceability-walkthrough.mjs",
-    "walkthrough:production": "node ../stock-api/scripts/production-lifecycle-walkthrough.mjs",
-    "walkthrough:commerce": "node ../stock-api/scripts/commerce-fulfilment-walkthrough.mjs",
+    "walkthrough": "node scripts/traceability-walkthrough.mjs",
+    "walkthrough:production": "node scripts/production-lifecycle-walkthrough.mjs",
+    "walkthrough:commerce": "node scripts/commerce-fulfilment-walkthrough.mjs",
     "grant:admin": "node scripts/grant-system-admin.mjs",
     "seed": "ts-node src/seed.ts"
   },

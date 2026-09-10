@@ -126,4 +126,9 @@ export class FacilityService {
     // `code` is deliberately never touched — the entity refuses to update it.
     return this.facilities.save(facility);
   }
+
+  /** Removes all facilities that belong to an organization (used by purge). */
+  async deleteFor(organizationId: number): Promise<void> {
+    await this.facilities.delete({ organizationId });
+  }
 }

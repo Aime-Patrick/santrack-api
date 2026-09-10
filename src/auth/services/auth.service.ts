@@ -36,7 +36,12 @@ export interface AuthResult {
     email: string;
     fullName: string | null;
     role: UserRole;
-    organization: { id: number; name: string; type: string } | null;
+    organization: {
+      id: number;
+      name: string;
+      type: string;
+      onboardingStatus: string;
+    } | null;
     mustChangePassword: boolean;
     /**
      * Everything this person may do, already resolved from their role and
@@ -178,6 +183,27 @@ export class AuthService {
   }
 
   /**
+   * Self-service profile update — lets a user change their own display name.
+   * Returns a fresh /me payload so the client can update its cache in one step.
+   */
+  async updateProfile(
+    actor: User,
+    dto: { fullName?: string },
+  ): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+
+    if (dto.fullName !== undefined) {
+      user.fullName = dto.fullName.trim() || null;
+    }
+    await this.users.save(user);
+    return this.describe(user);
+  }
+
+  /**
    * Starts a self-service password reset.
    *
    * Always answers success - whether or not the email is registered - so the
@@ -293,6 +319,7 @@ export class AuthService {
             id: user.organization.id,
             name: user.organization.name,
             type: user.organization.type,
+            onboardingStatus: user.organization.onboardingStatus,
           }
         : null,
       mustChangePassword: !!user.mustChangePassword,

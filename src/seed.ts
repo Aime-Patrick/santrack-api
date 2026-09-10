@@ -7,7 +7,7 @@ import { User } from './auth/entities/user.entity';
 import { UserRole } from './auth/user-role.enum';
 import { Organization } from './organization/entities/organization.entity';
 import { OrganizationType } from './organization/organization-type.enum';
-import { OnboardingStatus } from './organization/onboarding-status.enum';
+import { OnboardingStatus, IndustrySector } from './organization/onboarding-status.enum';
 import { Product } from './product/entities/product.entity';
 import { ProductCategory } from './product/entities/product-category.entity';
 import { Location } from './location/entities/location.entity';
@@ -20,6 +20,7 @@ import { Employee } from './payroll/entities/employee.entity';
 import { EmployeeStatus } from './payroll/payroll.enums';
 import { LicenseCategory, License } from './licensing/entities/license.entity';
 import { LicensedActivity, LicenseStatus } from './licensing/licensing.enums';
+import { RegulatoryAuthority } from './licensing/entities/regulatory-authority.entity';
 
 const ds = new DataSource(dataSourceOptions);
 
@@ -42,15 +43,21 @@ async function seed() {
   const employeeRepo = ds.getRepository(Employee);
   const licenseCategoryRepo = ds.getRepository(LicenseCategory);
   const licenseRepo = ds.getRepository(License);
+  const authorityRepo = ds.getRepository(RegulatoryAuthority);
 
   // ─── Organizations ───
   console.log('--- Organizations ---');
-  const orgDefs: { name: string; type: OrganizationType }[] = [
-    { name: 'Rwanda Business Standards Agency', type: OrganizationType.REGULATOR },
-    { name: 'Rwanda Fresh Dairy Ltd', type: OrganizationType.MANUFACTURER },
-    { name: 'Kigali Distribution Centre', type: OrganizationType.WAREHOUSE },
-    { name: 'Huye Logistics', type: OrganizationType.DISTRIBUTOR },
-    { name: 'Kimironko Supermarket', type: OrganizationType.RETAILER },
+  const orgDefs: { name: string; type: OrganizationType; onboardingStatus: OnboardingStatus }[] = [
+    { name: 'Rwanda Business Standards Agency', type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Rwanda Food & Drugs Authority',    type: OrganizationType.REGULATOR,  onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Rwanda Fresh Dairy Ltd',           type: OrganizationType.MANUFACTURER, onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Kigali Distribution Centre',       type: OrganizationType.WAREHOUSE,   onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Huye Logistics',                   type: OrganizationType.DISTRIBUTOR, onboardingStatus: OnboardingStatus.APPROVED },
+    { name: 'Kimironko Supermarket',            type: OrganizationType.RETAILER,    onboardingStatus: OnboardingStatus.APPROVED },
+    // ── Pending applicants — visible in the registration review queue ──
+    { name: 'Kigali Beverages Co.',             type: OrganizationType.MANUFACTURER, onboardingStatus: OnboardingStatus.PENDING },
+    { name: 'Great Lakes Import Ltd',           type: OrganizationType.DISTRIBUTOR,  onboardingStatus: OnboardingStatus.PENDING },
+    { name: 'Rubavu Retail Chain',              type: OrganizationType.RETAILER,     onboardingStatus: OnboardingStatus.CHANGES_REQUESTED },
   ];
 
   const orgs: Record<string, Organization> = {};
@@ -59,12 +66,13 @@ async function seed() {
       const org = orgRepo.create({
         name: def.name,
         type: def.type,
-        // Seeded organizations are already-approved demo businesses with
-        // licences; only real self-registrations go through the review queue.
-        onboardingStatus: OnboardingStatus.APPROVED,
+        onboardingStatus: def.onboardingStatus,
+        ...(def.onboardingStatus === OnboardingStatus.CHANGES_REQUESTED
+          ? { reviewNote: 'Please upload a valid RDB certificate and resubmit.' }
+          : {}),
       });
       await orgRepo.save(org);
-      console.log(`  Created org: ${def.name}`);
+      console.log(`  Created org: ${def.name} (${def.onboardingStatus})`);
     }
     orgs[def.name] = (await orgRepo.findOne({ where: { name: def.name } }))!;
   }
@@ -92,6 +100,13 @@ async function seed() {
       fullName: 'RBSA Admin',
       role: UserRole.ORG_ADMIN,
       orgName: 'Rwanda Business Standards Agency',
+    },
+    {
+      email: 'admin@rda.gov.rw',
+      passwordHash: await bcrypt.hash('fda_admin123', 10),
+      fullName: 'Rwanda FDA Admin',
+      role: UserRole.ORG_ADMIN,
+      orgName: 'Rwanda Food & Drugs Authority',
     },
     {
       email: 'manufacturer@dairy.rw',
@@ -340,6 +355,86 @@ async function seed() {
   } else {
     console.log(`  Skipped license: ${licNumber} (exists)`);
   }
+
+  // ── Licence applications in the RBSA review queue ──────────────────────
+  // Two SUBMITTED applications so the "Licence queue" card shows a non-zero
+  // count when RBSA logs in. Kigali Beverages and Great Lakes Import applied
+  // for manufacturing/distribution licences and are awaiting regulator review.
+  const pendingLicDefs: { licenseNumber: string; orgName: string }[] = [
+    { licenseNumber: 'LIC-MFG-APP-001', orgName: 'Kigali Beverages Co.' },
+    { licenseNumber: 'LIC-DIST-APP-001', orgName: 'Great Lakes Import Ltd' },
+  ];
+  for (const def of pendingLicDefs) {
+    if (!(await exists(licenseRepo, { licenseNumber: def.licenseNumber }))) {
+      const applicant = orgs[def.orgName];
+      if (applicant) {
+        const lic = licenseRepo.create({
+          licenseNumber: def.licenseNumber,
+          organization: applicant,
+          category: licCategory,
+          status: LicenseStatus.SUBMITTED,
+        });
+        await licenseRepo.save(lic);
+        console.log(`  Created submitted licence application: ${def.licenseNumber} for ${def.orgName}`);
+      }
+    } else {
+      console.log(`  Skipped licence application: ${def.licenseNumber} (exists)`);
+    }
+  }
+
+  // ─── Regulatory Authorities ───
+  console.log('\n--- Regulatory Authorities ---');
+
+  // RBSA — general-purpose standards authority. Its mandates list every sector
+  // so it acts as the final fallback when no specialist authority matches.
+  const rbsaOrg = orgs['Rwanda Business Standards Agency'];
+  if (!(await exists(authorityRepo, { code: 'RBSA' }))) {
+    await authorityRepo.save(authorityRepo.create({
+      code: 'RBSA',
+      name: 'Rwanda Business Standards Agency',
+      operatingOrganization: rbsaOrg,
+      isActive: true,
+      mandates: Object.values(IndustrySector),
+      caseCategories: ['REGISTRATION', 'LICENCE', 'INSPECTION', 'RECALL', 'COMPLAINT'],
+      teams: ['Registration', 'Licensing', 'Enforcement', 'Inspections'],
+      referralResponseDays: 14,
+    }));
+    console.log('  Created authority: RBSA (Rwanda Business Standards Agency)');
+  } else {
+    console.log('  Skipped authority: RBSA (exists)');
+  }
+
+  // Rwanda FDA — specialist authority for pharmaceuticals, food/beverage and
+  // cosmetics. Sector routing sends applications in those three sectors here
+  // instead of to RBSA.
+  const fdaOrg = orgs['Rwanda Food & Drugs Authority'];
+  if (!(await exists(authorityRepo, { code: 'RFDA' }))) {
+    await authorityRepo.save(authorityRepo.create({
+      code: 'RFDA',
+      name: 'Rwanda Food & Drugs Authority',
+      operatingOrganization: fdaOrg,
+      isActive: true,
+      mandates: [
+        IndustrySector.PHARMACEUTICALS,
+        IndustrySector.FOOD_AND_BEVERAGE,
+        IndustrySector.COSMETICS,
+      ],
+      caseCategories: ['DRUG_SAFETY', 'FOOD_RECALL', 'LABELLING', 'ADVERSE_EVENT', 'INSPECTION'],
+      teams: ['Drug Regulation', 'Food Safety', 'Cosmetics', 'Pharmacovigilance'],
+      referralResponseDays: 10,
+    }));
+    console.log('  Created authority: RFDA (Rwanda Food & Drugs Authority)');
+  } else {
+    console.log('  Skipped authority: RFDA (exists)');
+  }
+
+  // ── Print FDA credentials so developers can log in immediately ──
+  console.log('\n--- Rwanda FDA Credentials ---');
+  console.log('  Organization : Rwanda Food & Drugs Authority');
+  console.log('  Authority code: RFDA');
+  console.log('  Login email  : admin@rda.gov.rw');
+  console.log('  Password     : fda_admin123');
+  console.log('  Sectors      : PHARMACEUTICALS, FOOD_AND_BEVERAGE, COSMETICS');
 
   console.log('\nSeed complete.');
   await ds.destroy();

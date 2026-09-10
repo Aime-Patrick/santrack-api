@@ -69,7 +69,7 @@ export class LicenseController {
   }
 
   @Post()
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.MANAGE_USERS)
   async apply(
     @ActingOrg() organization: Organization,
     @CurrentUser() actor: User,
@@ -79,7 +79,7 @@ export class LicenseController {
   }
 
   @Post(':id/documents')
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.MANAGE_USERS)
   @UseInterceptors(FileInterceptor('file'))
   async attach(
     @ActingOrg() organization: Organization,
@@ -137,7 +137,7 @@ export class LicenseController {
 
   @Post(':id/submit')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.MANAGE_USERS)
   async submit(
     @ActingOrg() organization: Organization,
     @CurrentUser() actor: User,
@@ -148,7 +148,7 @@ export class LicenseController {
 
   @Post(':id/cancel')
   @HttpCode(200)
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.MANAGE_USERS)
   async cancel(
     @ActingOrg() organization: Organization,
     @CurrentUser() actor: User,
@@ -158,7 +158,7 @@ export class LicenseController {
   }
 
   @Post(':id/renew')
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.MANAGE_USERS)
   async renew(
     @ActingOrg() organization: Organization,
     @CurrentUser() actor: User,

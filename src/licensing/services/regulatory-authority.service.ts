@@ -23,16 +23,40 @@ export class RegulatoryAuthorityService {
 
   list() { return this.authorities.find({ order: { name: 'ASC' } }); }
 
+  /**
+   * Returns the active authority whose mandates include the given sector.
+   * Falls back to the first active authority when no sector-specific match
+   * is found (e.g. IndustrySector.OTHER or an unmapped sector), so routing
+   * never hard-fails when a general-purpose authority like RBSA exists.
+   * Returns null only when the system has no active authorities at all.
+   */
+  async forSector(sector: string | null | undefined): Promise<RegulatoryAuthority | null> {
+    const active = await this.authorities.find({ where: { isActive: true }, order: { id: 'ASC' } });
+    if (active.length === 0) return null;
+    if (sector) {
+      const match = active.find((a) => a.mandates.includes(sector));
+      if (match) return match;
+    }
+    // Fallback: the first active authority acts as the general-purpose default
+    return active[0];
+  }
+
   async forOperator(organization: Organization): Promise<RegulatoryAuthority> {
     const authority = await this.authorities.findOne({ where: { operatingOrganization: { id: organization.id }, isActive: true } });
     if (!authority) throw new TraceabilityRuleException('This regulator is not configured as an active SanTrack authority');
     return authority;
   }
 
+  /** Returns the authority for an org, or throws 404 if none exists. */
   async forOrganization(organization: Organization): Promise<RegulatoryAuthority> {
     const authority = await this.authorities.findOne({ where: { operatingOrganization: { id: organization.id } } });
     if (!authority) throw new NotFoundEntityException('RegulatoryAuthority', organization.id);
     return authority;
+  }
+
+  /** Returns the authority for an org, or null if none exists (non-throwing). */
+  async findForOrganization(organization: Organization): Promise<RegulatoryAuthority | null> {
+    return this.authorities.findOne({ where: { operatingOrganization: { id: organization.id } } });
   }
 
   async create(dto: CreateRegulatoryAuthorityDto): Promise<RegulatoryAuthority> {

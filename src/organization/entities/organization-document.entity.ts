@@ -28,7 +28,7 @@ export class OrganizationDocument {
   organizationId: number;
 
   /** Document type: RDB_CERTIFICATE, FDA_PREMISE, IMPORT_LICENSE, etc. */
-  @Column({ type: 'varchar', length: 100, nullable: false })
+  @Column({ name: 'document_type', type: 'varchar', length: 100, nullable: false })
   documentType: string;
 
   /** Certificate / license number */

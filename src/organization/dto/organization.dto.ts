@@ -18,6 +18,7 @@ import {
   OrganizationType,
   SELF_DECLARABLE_TYPES,
 } from '../organization-type.enum';
+import { IndustrySector } from '../onboarding-status.enum';
 
 export class CreateOrganizationDto {
   @IsString()
@@ -94,6 +95,18 @@ export class CreateOrganizationDto {
   @ValidateNested({ each: true })
   @Type(() => OwnershipDto)
   ownership?: OwnershipDto[];
+
+  /**
+   * The industry sector this business operates in. Used to route the
+   * registration application to the correct regulatory authority for review
+   * (e.g. Rwanda FDA for pharmaceuticals, RSB for general manufacturing,
+   * RMB for minerals, NAEB for agricultural exports).
+   */
+  @IsOptional()
+  @IsEnum(IndustrySector, {
+    message: `Choose a valid industry sector: ${Object.values(IndustrySector).join(', ')}`,
+  })
+  industrySector?: IndustrySector;
 }
 
 export class OwnershipDto {
@@ -122,6 +135,14 @@ export class OwnershipDto {
 /**
  * The regulator's verdict on a registration application.
  *
+ * Three possible decisions:
+ * - APPROVE: activates the business and issues its operating licence.
+ * - REQUEST_CHANGES: sends the application back to the applicant with a note
+ *   explaining what to fix. The application stays open; the applicant can
+ *   upload new documents and resubmit, re-entering the review queue.
+ * - REJECT: closes the application. The applicant is told why and must
+ *   re-register to try again.
+ *
  * Approval activates the business and issues its operating licence; rejection
  * needs a reason, because the applicant has to know what to fix before they
  * resubmit.
@@ -144,14 +165,14 @@ export class AttachRegistrationDocumentDto {
 }
 
 export class RegistrationDecisionDto {
-  @IsIn(['APPROVE', 'REJECT'], {
-    message: "Decision must be APPROVE or REJECT",
+  @IsIn(['APPROVE', 'REQUEST_CHANGES', 'REJECT'], {
+    message: "Decision must be APPROVE, REQUEST_CHANGES, or REJECT",
   })
-  decision: 'APPROVE' | 'REJECT';
+  decision: 'APPROVE' | 'REQUEST_CHANGES' | 'REJECT';
 
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @MaxLength(1000)
   reason?: string;
 }
 

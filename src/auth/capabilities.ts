@@ -92,13 +92,30 @@ export enum Capability {
    * Read the platform-wide audit log - the digital footprint of every write
    * across all organizations.
    *
-   * Business staff keep reading their own organization's footprint through
-   * VIEW_OPERATIONS with an organization scope; this is the wider view a
-   * supervisor needs to answer "who did what to whom across the platform".
-   * Held by the platform operator and conferred on licensing authorities by
-   * their standing.
+   * This is operator telemetry: HTTP paths, methods, response codes and client
+   * IPs. It answers "is the platform healthy and who touched this endpoint",
+   * not "who approved this licence" - a supervisor's question is answered by
+   * the accountability ledger, not by raw request logs. Held by the platform
+   * operator only; regulators supervise through OVERSEE_INDUSTRIES and the
+   * accountability ledger instead.
    */
   READ_AUDIT = 'READ_AUDIT',
+
+  /**
+   * Authoritatively record a label print action: which pool, which layout,
+   * how many labels, and who pressed the button.
+   */
+  PRINT_LABELS = 'PRINT_LABELS',
+
+  /**
+   * Post, edit, publish and retract public announcements on the /updates page.
+   *
+   * Held by the platform operator (SYSTEM_ADMIN) and by regulatory authority
+   * administrators (ORG_ADMIN in a REGULATOR org). Manufacturers and trading
+   * companies are not in a position to broadcast platform-wide news — their
+   * communications are internal to their own organizations.
+   */
+  PUBLISH_ANNOUNCEMENT = 'PUBLISH_ANNOUNCEMENT',
 }
 
 const ALL = Object.values(Capability);
@@ -119,7 +136,8 @@ const ALL_WITHIN_ORGANIZATION = ALL.filter(
     capability !== Capability.OVERSEE_INDUSTRIES &&
     capability !== Capability.DECIDE_LICENCES &&
     capability !== Capability.MANAGE_INDUSTRIES &&
-    capability !== Capability.READ_AUDIT,
+    capability !== Capability.READ_AUDIT &&
+    capability !== Capability.PRINT_LABELS,
 );
 
 /**
@@ -140,6 +158,7 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     Capability.ADMINISTER_PLATFORM,
     Capability.MANAGE_INDUSTRIES,
     Capability.READ_AUDIT,
+    Capability.PUBLISH_ANNOUNCEMENT,
   ],
   // The most senior role a customer can hold, and still not a platform
   // operator - an organization administrator must not be able to award their
@@ -153,12 +172,14 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     Capability.RUN_PRODUCTION,
     Capability.PERFORM_QC,
     Capability.VIEW_OPERATIONS,
+    Capability.PRINT_LABELS,
   ],
   [UserRole.PRODUCTION_OFFICER]: [
     Capability.REGISTER_IDENTITY,
     Capability.HANDLE_PACKAGING,
     Capability.RUN_PRODUCTION,
     Capability.VIEW_OPERATIONS,
+    Capability.PRINT_LABELS,
   ],
 
   [UserRole.WAREHOUSE_MANAGER]: [
@@ -167,11 +188,13 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     Capability.APPLY_LIFECYCLE,
     Capability.MANAGE_LOGISTICS,
     Capability.VIEW_OPERATIONS,
+    Capability.PRINT_LABELS,
   ],
   [UserRole.WAREHOUSE_OFFICER]: [
     Capability.HANDLE_PACKAGING,
     Capability.MOVE_STOCK,
     Capability.VIEW_OPERATIONS,
+    Capability.PRINT_LABELS,
   ],
 
   [UserRole.QUALITY_OFFICER]: [
@@ -199,6 +222,23 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
 };
 
 /**
+ * The default cap each business type may hold for label printing.
+ *
+ * A manufacturer and a regulator both print; a warehouse and a producer both
+ * pack and move stock, so they get PRINT_LABELS too. A trading business only
+ * receives, sells and buys — its staff never stand at the label printer — so
+ * it is left out here and would need an explicit per-user grant from the
+ * platform operator.
+ */
+export const DEFAULT_PRINT_LABELS_BY_ORGANIZATION_TYPE: Partial<
+  Record<OrganizationType, Capability[]>
+> = {
+  [OrganizationType.MANUFACTURER]: [Capability.PRINT_LABELS],
+  [OrganizationType.WAREHOUSE]: [Capability.PRINT_LABELS],
+  [OrganizationType.REGULATOR]: [Capability.PRINT_LABELS],
+};
+
+/**
  * Capabilities that come from *which organization you work for* rather than
  * from your job title.
  *
@@ -214,12 +254,11 @@ export const CAPABILITIES_CONFERRED_BY_ORGANIZATION_TYPE: Partial<
   Record<OrganizationType, Capability[]>
 > = {
   // An authority supervises the businesses on the platform: it reads the
-  // industry registry and the platform-wide audit log. Neither is a write -
-  // registry writes (MANAGE_INDUSTRIES) stay with the operator unless a
-  // specific officer is granted them.
+  // industry registry. The platform-wide audit log stays with the operator -
+  // HTTP telemetry (paths, IPs, status codes) is infrastructure oversight,
+  // not regulatory accountability, which the ledger serves.
   [OrganizationType.REGULATOR]: [
     Capability.OVERSEE_INDUSTRIES,
-    Capability.READ_AUDIT,
   ],
 };
 
@@ -246,14 +285,16 @@ export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
 > = {
   // ── Regulator ────────────────────────────────────────────────────────
   // No operational capabilities. Supervises the industry, screens
-  // licence applications, manages recalls, manages its own staff.
+  // licence applications, manages recalls, manages its own staff. The
+  // platform-wide audit log stays operator-only: regulators hold the
+  // accountability ledger, not raw HTTP telemetry.
   [OrganizationType.REGULATOR]: [
     Capability.VIEW_OPERATIONS,
     Capability.OVERSEE_INDUSTRIES,
     Capability.DECIDE_LICENCES,
     Capability.MANAGE_RECALL,
     Capability.MANAGE_USERS,
-    Capability.READ_AUDIT,
+    Capability.PUBLISH_ANNOUNCEMENT,
   ],
 
   // ── Manufacturer ─────────────────────────────────────────────────────
@@ -334,6 +375,26 @@ export const CAPABILITY_CEILING_BY_ORGANIZATION_TYPE: Partial<
   [OrganizationType.CONSUMER]: [
     Capability.VIEW_OPERATIONS,
   ],
+};
+
+/**
+ * Default grant to add PRINT_LABELS to roles that already carry the
+ * relevant operational capability.
+ *
+ * This is not a ceiling; it is the normal default for organizations whose
+ * staff actually stand at the label printer. Regulator, manufacturer,
+ * warehouse and production company roles receive it automatically. Trading
+ * businesses do not; if they need it, the platform operator grants it
+ * per user.
+ */
+export const DEFAULT_PRINT_LABELS_FOR_ROLES: Partial<
+  Record<UserRole, Capability[]>
+> = {
+  [UserRole.PRODUCTION_MANAGER]: [Capability.PRINT_LABELS],
+  [UserRole.PRODUCTION_OFFICER]: [Capability.PRINT_LABELS],
+  [UserRole.WAREHOUSE_MANAGER]: [Capability.PRINT_LABELS],
+  [UserRole.WAREHOUSE_OFFICER]: [Capability.PRINT_LABELS],
+  [UserRole.QUALITY_OFFICER]: [Capability.PRINT_LABELS],
 };
 
 /**
@@ -470,6 +531,10 @@ export const CAPABILITY_DESCRIPTIONS: Record<Capability, string> = {
     'Register businesses in the industry registry (Add Industry).',
   [Capability.READ_AUDIT]:
     'Read the platform-wide audit log - the digital footprint of every write across all organizations.',
+  [Capability.PRINT_LABELS]:
+    'Authoritatively record a label print action: which pool, which layout, how many labels, and who pressed the button.',
+  [Capability.PUBLISH_ANNOUNCEMENT]:
+    'Post, edit, publish and retract public announcements shown on the /updates page.',
 };
 
 /** Whether a specific person may perform an operation. */

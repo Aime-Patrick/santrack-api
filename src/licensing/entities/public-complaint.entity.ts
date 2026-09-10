@@ -47,7 +47,7 @@ export class PublicComplaint {
   note: string | null;
 
   /** Free-text area, deliberately not GPS or an address. */
-  @Column({ type: 'varchar', length: 180, nullable: true })
+  @Column({ name: 'location_hint', type: 'varchar', length: 180, nullable: true })
   locationHint: string | null;
 
   @Column({ type: 'varchar', length: 180, nullable: true })

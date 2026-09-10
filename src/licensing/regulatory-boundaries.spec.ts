@@ -18,7 +18,7 @@ describe('regulatory authority boundaries', () => {
     const referrals = { findOne: jest.fn().mockResolvedValue(referralRow), find: jest.fn().mockResolvedValue([]), save: jest.fn(async (row) => ({ id: 1, ...row })), create: jest.fn((row) => row) } as any;
     const authorities = { findOne: jest.fn().mockResolvedValue(authorityB) } as any;
     const events = { save: jest.fn().mockResolvedValue(undefined), create: jest.fn((row) => row) } as any;
-    const service = new RegulatoryCaseService(cases, events, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, authorities, referrals, {} as any, {} as any);
+    const service = new RegulatoryCaseService(cases, events, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, authorities, referrals, {} as any, {} as any, { sendToUser: jest.fn() } as any);
     return { service, cases, referrals, authorities };
   }
 

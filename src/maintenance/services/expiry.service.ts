@@ -13,6 +13,7 @@ import { NotificationType } from '../../notifications/entities/notification.enti
 import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
+import { RegistrationConsultationService } from '../../organization/services/registration-consultation.service';
 
 export interface ExpirySweepResult {
   expired: number;
@@ -48,6 +49,7 @@ export class ExpiryService {
     private readonly recorder: EventRecorder,
     private readonly notifications: NotificationsGateway,
     private readonly licenses: LicenseService,
+    private readonly registrationConsultations: RegistrationConsultationService,
     config: ConfigService,
   ) {
     this.nearExpiryDays = config.get<number>('maintenance.nearExpiryDays') ?? 30;
@@ -73,6 +75,10 @@ export class ExpiryService {
     const expired = await this.expirePastDate();
     const nearExpiryNotified = await this.warnOnNearExpiry();
     const licencesLapsed = await this.lapseLicences();
+    const consultationsOverdue = await this.markConsultationsOverdue();
+    if (consultationsOverdue > 0) {
+      this.logger.log(`Expiry sweep: ${consultationsOverdue} registration consultation(s) marked OVERDUE`);
+    }
     return { expired, nearExpiryNotified, licencesLapsed };
   }
 
@@ -194,6 +200,16 @@ export class ExpiryService {
       return await this.licenses.expireLapsed();
     } catch (error) {
       this.logger.warn(`Licence expiry sweep failed: ${(error as Error).message}`);
+      return 0;
+    }
+  }
+
+  /** Marks registration consultations past their due date as OVERDUE. */
+  private async markConsultationsOverdue(): Promise<number> {
+    try {
+      return await this.registrationConsultations.markOverdue();
+    } catch (error) {
+      this.logger.warn(`Consultation overdue sweep failed: ${(error as Error).message}`);
       return 0;
     }
   }

@@ -50,7 +50,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.organization_id = :orgId', { orgId: organizationId })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -75,7 +75,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('le.license', 'l')
       .leftJoinAndSelect('le.actor', 'actor')
       .where('l.organization_id = :orgId', { orgId: organizationId })
-      .orderBy('le.recorded_at', 'DESC')
+      .orderBy('le.recordedAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -100,7 +100,7 @@ export class RegulatoryAccountabilityService {
       .leftJoinAndSelect('te.actor', 'actor')
       .leftJoinAndSelect('te.sourceOrganization', 'org')
       .where('te.source_organization_id = :orgId', { orgId: organizationId })
-      .orderBy('te.occurred_at', 'DESC')
+      .orderBy('te.occurredAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -151,7 +151,7 @@ export class RegulatoryAccountabilityService {
       .createQueryBuilder('i')
       .leftJoinAndSelect('i.inspector', 'inspector')
       .where('i.organization_id = :orgId', { orgId: organizationId })
-      .orderBy('i.inspected_at', 'DESC')
+      .orderBy('i.inspectedAt', 'DESC')
       .take(limit)
       .getMany();
     pushInspectionEntries(entries, inspections);
@@ -188,7 +188,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.id = :caseId', { caseId })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
     pushCaseEntries(entries, caseEvents);
@@ -211,7 +211,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.facility_id = :facilityId', { facilityId })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
     pushCaseEntries(entries, caseEvents);
@@ -233,7 +233,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('le.license', 'l')
       .leftJoinAndSelect('le.actor', 'actor')
       .where('l.id = :licenceId', { licenceId })
-      .orderBy('le.recorded_at', 'DESC')
+      .orderBy('le.recordedAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -257,7 +257,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.license_id = :licenceId', { licenceId })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
     pushCaseEntries(entries, caseEvents);
@@ -287,7 +287,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.batch_id IN (:...batchIds)', { batchIds })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
     pushCaseEntries(entries, caseEvents);
@@ -300,7 +300,7 @@ export class RegulatoryAccountabilityService {
       .leftJoinAndSelect('te.sourceOrganization', 'org')
       .leftJoin('te.item', 'item')
       .where('te.batch_id IN (:...batchIds) OR (item.id IS NOT NULL AND item.batch_id IN (:...batchIds))', { batchIds })
-      .orderBy('te.occurred_at', 'DESC')
+      .orderBy('te.occurredAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -350,7 +350,7 @@ export class RegulatoryAccountabilityService {
       .innerJoin('e.case', 'c')
       .leftJoinAndSelect('e.actor', 'actor')
       .where('c.batch_id = :batchId', { batchId })
-      .orderBy('e.recorded_at', 'DESC')
+      .orderBy('e.recordedAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -376,7 +376,7 @@ export class RegulatoryAccountabilityService {
       .leftJoinAndSelect('te.sourceOrganization', 'org')
       .leftJoin('te.item', 'item')
       .where('te.batch_id = :batchId OR (item.id IS NOT NULL AND item.batch_id = :batchId)', { batchId })
-      .orderBy('te.occurred_at', 'DESC')
+      .orderBy('te.occurredAt', 'DESC')
       .take(limit)
       .getMany();
 
@@ -472,7 +472,7 @@ async function pushInspectionsByCondition(
     .innerJoin('i.case', 'c')
     .leftJoinAndSelect('i.inspector', 'inspector')
     .where(where, params)
-    .orderBy('i.inspected_at', 'DESC')
+    .orderBy('i.inspectedAt', 'DESC')
     .take(limit)
     .getMany();
   pushInspectionEntries(entries, inspections);

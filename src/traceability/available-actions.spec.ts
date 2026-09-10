@@ -273,3 +273,75 @@ describe('capability resolution', () => {
     expect(actions.some((a) => a.action === ItemAction.QUARANTINE)).toBe(false);
   });
 });
+
+describe('RETAILER / SHOP — manual packaging actions must not appear', () => {
+  /**
+   * Even though RETAILER and SHOP are granted HANDLE_PACKAGING in their
+   * capability ceiling (it is needed internally by StockInService), the trace
+   * page must never show them PACK, OPEN or REMOVE_CONTENT buttons.
+   * Those are internal operations that Stock In handles automatically.
+   */
+
+  const RETAILER_ORG = {
+    id: 4,
+    name: 'Test Retailer',
+    type: OrganizationType.RETAILER,
+  } as Organization;
+
+  const SHOP_ORG = {
+    id: 5,
+    name: 'Test Shop',
+    type: OrganizationType.SHOP,
+  } as Organization;
+
+  const PACKAGING_ACTIONS = [ItemAction.PACK, ItemAction.OPEN, ItemAction.REMOVE_CONTENT];
+
+  function actionsForOrg(org: Organization) {
+    const capabilities = capabilitiesFor(UserRole.ORG_ADMIN, org.type as OrganizationType);
+    return availableActions({
+      item: container({ holder: org }),
+      organization: org,
+      capabilities,
+    });
+  }
+
+  it('does not offer PACK to a RETAILER ORG_ADMIN', () => {
+    const actions = actionsForOrg(RETAILER_ORG);
+    expect(actions.some((a) => a.action === ItemAction.PACK)).toBe(false);
+  });
+
+  it('does not offer OPEN to a RETAILER ORG_ADMIN', () => {
+    const actions = actionsForOrg(RETAILER_ORG);
+    expect(actions.some((a) => a.action === ItemAction.OPEN)).toBe(false);
+  });
+
+  it('does not offer REMOVE_CONTENT to a RETAILER ORG_ADMIN', () => {
+    const actions = actionsForOrg(RETAILER_ORG);
+    expect(actions.some((a) => a.action === ItemAction.REMOVE_CONTENT)).toBe(false);
+  });
+
+  it.each(PACKAGING_ACTIONS)(
+    'suppresses %s for SHOP regardless of capability',
+    (action) => {
+      const actions = actionsForOrg(SHOP_ORG);
+      expect(actions.some((a) => a.action === action)).toBe(false);
+    },
+  );
+
+  it('still offers SELL and DISPATCH to a RETAILER (those workflows are unchanged)', () => {
+    const actions = actionsForOrg(RETAILER_ORG);
+    expect(actions.some((a) => a.action === ItemAction.SELL)).toBe(true);
+    expect(actions.some((a) => a.action === ItemAction.DISPATCH)).toBe(true);
+  });
+
+  it('still offers PACK to a WAREHOUSE ORG_ADMIN (unaffected by the change)', () => {
+    const warehouseOrg = { id: 1, name: 'Test WH', type: OrganizationType.WAREHOUSE } as Organization;
+    const capabilities = capabilitiesFor(UserRole.ORG_ADMIN, OrganizationType.WAREHOUSE);
+    const actions = availableActions({
+      item: container({ holder: warehouseOrg }),
+      organization: warehouseOrg,
+      capabilities,
+    });
+    expect(actions.some((a) => a.action === ItemAction.PACK)).toBe(true);
+  });
+});

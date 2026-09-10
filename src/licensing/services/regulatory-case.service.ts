@@ -1,12 +1,15 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { EntityManager, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
+import { UserRole } from '../../auth/user-role.enum';
 import { Batch } from '../../batch/entities/batch.entity';
 import { NotFoundEntityException, TraceabilityRuleException } from '../../common/errors';
 import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
+import { NotificationType } from '../../notifications/entities/notification.entity';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { STORAGE_PROVIDER, StorageProvider } from '../../storage/storage.provider';
 import { OpenRegulatoryCaseDto } from '../dto/regulatory-case.dto';
 import { ComplianceFinding } from '../entities/compliance-finding.entity';
@@ -57,6 +60,7 @@ export class RegulatoryCaseService {
     private readonly authorityService: RegulatoryAuthorityService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
+    private readonly notifications: NotificationsGateway,
   ) {}
 
   async listForAuthority(authority: RegulatoryAuthority, status?: RegulatoryCaseStatus, assignedToId?: number) {
@@ -86,6 +90,25 @@ export class RegulatoryCaseService {
 
   async oneForAuthority(id: number, authority: RegulatoryAuthority): Promise<RegulatoryCase> {
     const caseRecord = await this.cases.findOne({ where: { id, leadAuthority: { id: authority.id } } });
+    if (!caseRecord) throw new NotFoundEntityException('RegulatoryCase', id);
+    return caseRecord;
+  }
+
+  /** The cases opened against one business — the subject of the case. */
+  async listForOrganization(organization: Organization, status?: RegulatoryCaseStatus) {
+    return this.cases.find({
+      where: {
+        organization: { id: organization.id },
+        ...(status ? { status } : {}),
+      },
+      order: { openedAt: 'DESC' },
+      take: 200,
+    });
+  }
+
+  /** A single case, but only when the caller is the business it is opened against. */
+  async oneForOrganization(id: number, organization: Organization): Promise<RegulatoryCase> {
+    const caseRecord = await this.cases.findOne({ where: { id, organization: { id: organization.id } } });
     if (!caseRecord) throw new NotFoundEntityException('RegulatoryCase', id);
     return caseRecord;
   }
@@ -130,8 +153,8 @@ export class RegulatoryCaseService {
     });
 
     try {
-      return await this.cases.manager.transaction(async (manager) => {
-        const evidence = await manager.save(manager.create(RegulatoryCaseEvidence, {
+      const evidence = await this.cases.manager.transaction(async (manager) => {
+        const evidenceRow = await manager.save(manager.create(RegulatoryCaseEvidence, {
           case: caseRecord,
           submittedBy: actor,
           filename: file.originalname,
@@ -149,14 +172,86 @@ export class RegulatoryCaseService {
           case: caseRecord,
           actor,
           type: RegulatoryCaseEventType.EVIDENCE_SUBMITTED,
-          summary: `Corrective-action evidence submitted: ${evidence.filename}`,
-          detail: { evidenceId: evidence.id, note: evidence.note, fromStatus: previous, toStatus: caseRecord.status },
+          summary: `Corrective-action evidence submitted: ${evidenceRow.filename}`,
+          detail: { evidenceId: evidenceRow.id, note: evidenceRow.note, fromStatus: previous, toStatus: caseRecord.status },
         }));
-        return evidence;
+        return evidenceRow;
       });
+      // The response has landed. Tell the officer so review is a push, not a
+      // refresh-the-queue habit. Best-effort: a notification failure must not
+      // roll back a stored, committed piece of evidence.
+      await this.notifyAssignedRegulator(caseRecord, evidence).catch(() => undefined);
+      return evidence;
     } catch (error) {
       await this.storage.delete(stored.key);
       throw error;
+    }
+  }
+
+  private async notifyBusiness(caseRecord: RegulatoryCase, note?: string) {
+    const recipients = await this.users.find({
+      where: [
+        { organization: { id: caseRecord.organization.id }, role: UserRole.ORG_ADMIN },
+        { organization: { id: caseRecord.organization.id }, role: UserRole.MANAGEMENT },
+      ],
+    });
+    const label = caseRecord.caseNumber ?? `case #${caseRecord.id}`;
+    for (const recipient of recipients) {
+      await this.notifications.sendToUser(recipient.id, {
+        type: NotificationType.WARNING,
+        title: `Corrective action requested — ${label}`,
+        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Submit your corrective-action evidence to keep the case moving.`,
+        module: 'compliance',
+        actionUrl: '/dashboard/compliance/cases',
+      });
+    }
+  }
+
+  private async notifyBusinessDecision(caseRecord: RegulatoryCase, status: RegulatoryCaseStatus, note?: string) {
+    const recipients = await this.users.find({
+      where: [
+        { organization: { id: caseRecord.organization.id }, role: UserRole.ORG_ADMIN },
+        { organization: { id: caseRecord.organization.id }, role: UserRole.MANAGEMENT },
+      ],
+    });
+    const label = caseRecord.caseNumber ?? `case #${caseRecord.id}`;
+    const outcome = status === RegulatoryCaseStatus.RESOLVED ? 'resolved' : 'closed';
+    for (const recipient of recipients) {
+      await this.notifications.sendToUser(recipient.id, {
+        type: status === RegulatoryCaseStatus.RESOLVED ? NotificationType.SUCCESS : NotificationType.INFO,
+        title: `${label} ${outcome}`,
+        message: `${caseRecord.title}${note ? `: ${note}` : ''}`,
+        module: 'compliance',
+        actionUrl: '/dashboard/compliance/cases',
+      });
+    }
+  }
+
+  private async notifyAssignedRegulator(caseRecord: RegulatoryCase, evidence: RegulatoryCaseEvidence) {
+    const recipients = new Map<number, User>();
+    if (caseRecord.assignedTo) recipients.set(caseRecord.assignedTo.id, caseRecord.assignedTo);
+    // The authority's operating organization may have more supervisors than
+    // the single assigned officer — make sure at least the org admins know a
+    // response has landed so the case does not stall on one person's inbox.
+    const authorityOrgId = caseRecord.leadAuthority?.operatingOrganization?.id;
+    if (authorityOrgId) {
+      const supervisors = await this.users.find({
+        where: [
+          { organization: { id: authorityOrgId }, role: UserRole.ORG_ADMIN },
+          { organization: { id: authorityOrgId }, role: UserRole.MANAGEMENT },
+        ],
+      });
+      for (const supervisor of supervisors) recipients.set(supervisor.id, supervisor);
+    }
+    const label = caseRecord.caseNumber ?? `case #${caseRecord.id}`;
+    for (const recipient of recipients.values()) {
+      await this.notifications.sendToUser(recipient.id, {
+        type: NotificationType.INFO,
+        title: `Corrective-action evidence received — ${label}`,
+        message: `${caseRecord.organization.name} submitted ${evidence.filename}. Review and decide the case.`,
+        module: 'regulator',
+        actionUrl: '/dashboard/regulator',
+      });
     }
   }
 
@@ -313,6 +408,15 @@ export class RegulatoryCaseService {
       to: status,
       note: note?.trim() || null,
     });
+
+    // The regulator just told the business to act (or closed the loop). Make
+    // sure the business actually hears it — a corrective-action request that
+    // arrives only as a status in a regulator's workspace has not arrived.
+    if (status === RegulatoryCaseStatus.AWAITING_BUSINESS) {
+      await this.notifyBusiness(saved, note);
+    } else if (status === RegulatoryCaseStatus.RESOLVED || status === RegulatoryCaseStatus.CLOSED) {
+      await this.notifyBusinessDecision(saved, status, note);
+    }
     return saved;
   }
 

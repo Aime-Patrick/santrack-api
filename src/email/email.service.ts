@@ -209,4 +209,49 @@ export class EmailService {
       },
     });
   }
+
+  async sendRegistrationChangesRequested(params: {
+    to: string;
+    companyName: string;
+    note: string;
+    loginUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: 'Action required on your registration — SANTRACK',
+      template: 'registration-changes-requested',
+      data: {
+        title: 'Changes requested on your registration',
+        companyName: params.companyName,
+        note: params.note,
+        loginUrl: params.loginUrl,
+      },
+    });
+  }
+
+  /**
+   * Notifies a user that their account has been removed by a platform
+   * administrator. Sent before the row is deleted so the address is still
+   * available.
+   */
+  async sendAccountRemoved(params: {
+    to: string;
+    fullName: string | null;
+    organizationName: string | null;
+  }): Promise<void> {
+    const greeting = params.fullName ?? 'there';
+    const orgLine = params.organizationName
+      ? ` from ${params.organizationName}`
+      : '';
+    await this.send({
+      to: params.to,
+      subject: 'Your SANTRACK account has been removed',
+      template: 'account-removed',
+      data: {
+        title: 'Account removed',
+        greeting,
+        orgLine,
+      },
+    });
+  }
 }

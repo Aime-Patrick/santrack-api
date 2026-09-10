@@ -23,13 +23,16 @@ import {
   LicenseEvent,
 } from '../licensing/entities/license.entity';
 import { ProductionEligibilityDecision } from '../licensing/entities/production-eligibility-decision.entity';
+import { Announcement } from '../announcements/entities/announcement.entity';
 import { IdentityPool } from '../item/entities/identity-pool.entity';
+import { LabelPrintJob } from '../item/entities/label-print-job.entity';
 import { TraceableItem } from '../item/entities/traceable-item.entity';
 import { Location } from '../location/entities/location.entity';
 import { Facility } from '../organization/entities/facility.entity';
 import { Organization } from '../organization/entities/organization.entity';
 import { OrganizationDocument } from '../organization/entities/organization-document.entity';
 import { OrganizationOwner } from '../organization/entities/organization-owner.entity';
+import { RegistrationConsultation } from '../organization/entities/registration-consultation.entity';
 import { Product } from '../product/entities/product.entity';
 import { Brand } from '../product/entities/brand.entity';
 import { ProductCategory } from '../product/entities/product-category.entity';
@@ -89,11 +92,13 @@ loadEnv();
  * at startup instead of at the first query.
  */
 export const ENTITIES = [
+  Announcement,
   User,
   Facility,
   Organization,
   OrganizationDocument,
   OrganizationOwner,
+  RegistrationConsultation,
   Location,
   Product,
   ProductCategory,
@@ -102,6 +107,7 @@ export const ENTITIES = [
   Batch,
   TraceableItem,
   IdentityPool,
+  LabelPrintJob,
   CodeSequence,
   TraceabilityEvent,
   VerificationAttempt,

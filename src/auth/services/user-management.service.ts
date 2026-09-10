@@ -349,12 +349,25 @@ export class UserManagementService {
       throw new TraceabilityRuleException('You cannot deactivate your own account');
     }
 
-    const user = await this.users.findOne({ where: { id: userId } });
+    const user = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
     if (!user) {
       throw new NotFoundEntityException('User', userId);
     }
 
     this.requireVisible(actor, user);
+
+    // Notify before deleting — the email address is still accessible here.
+    // Fire-and-forget: an email failure must not block account removal.
+    void this.email
+      .sendAccountRemoved({
+        to: user.email,
+        fullName: user.fullName ?? null,
+        organizationName: user.organization?.name ?? null,
+      })
+      .catch(() => undefined);
 
     await this.users.remove(user);
   }

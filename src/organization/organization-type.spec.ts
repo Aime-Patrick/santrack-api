@@ -49,22 +49,32 @@ describe('platform administration', () => {
   });
 
   it('still gives an organization administrator every in-house capability', () => {
-    // The two exclusions are the cross-organization capabilities: running the
-    // platform, and reading the register of everyone on it. Both are things
-    // done to businesses rather than by them, so the most senior role a
-    // customer holds does not carry either - but everything that happens
+    // Five exclusions: running the platform, reading the register of every
+    // business, deciding licence applications, writing to the registry, and
+    // reading the platform-wide audit log. All are things done *to* businesses
+    // or *to* the platform rather than by them - the most senior role a
+    // customer holds does not carry any of them - but everything that happens
     // inside their own four walls does.
-    const crossOrganization: Capability[] = [
+    //
+    // DECIDE_LICENCES is deliberately not on the role: it is granted only to
+    // an ORG_ADMIN who works for a licensing authority (capabilitiesFor), so a
+    // manufacturer's administrator must not open the regulator's command
+    // centre. MANAGE_INDUSTRIES and READ_AUDIT are operator-held (and the
+    // former is individually grantable) rather than role-held.
+    const outsideOrganization: Capability[] = [
       Capability.ADMINISTER_PLATFORM,
       Capability.OVERSEE_INDUSTRIES,
+      Capability.DECIDE_LICENCES,
+      Capability.MANAGE_INDUSTRIES,
+      Capability.READ_AUDIT,
     ];
 
     for (const capability of Object.values(Capability)) {
-      if (crossOrganization.includes(capability)) continue;
+      if (outsideOrganization.includes(capability)) continue;
       expect(ROLE_CAPABILITIES[UserRole.ORG_ADMIN]).toContain(capability);
     }
 
-    for (const capability of crossOrganization) {
+    for (const capability of outsideOrganization) {
       expect(ROLE_CAPABILITIES[UserRole.ORG_ADMIN]).not.toContain(capability);
     }
   });

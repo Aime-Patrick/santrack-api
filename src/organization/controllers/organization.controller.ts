@@ -21,6 +21,7 @@ import { User } from '../../auth/entities/user.entity';
 import {
   ActingOrg,
   CurrentUser,
+  OptionalActingOrg,
   RequireCapability,
 } from '../../common/decorators';
 import { TraceabilityRuleException } from '../../common/errors';
@@ -111,7 +112,8 @@ export class OrganizationController {
 
   /**
    * The regulator's verdict on a registration application. Approval activates
-   * the business and issues its operating licence; rejection records why.
+   * the business and issues its operating licence; rejection records why;
+   * REQUEST_CHANGES sends it back with a note for the applicant to act on.
    */
   @Post(':id/decision')
   @HttpCode(200)
@@ -126,12 +128,44 @@ export class OrganizationController {
   }
 
   /**
+   * Applicant resubmits after a CHANGES_REQUESTED decision.
+   *
+   * The applicant uploads any corrected/missing documents through
+   * POST /api/organizations/:id/documents, then calls this endpoint to signal
+   * the application is ready for re-review. Status returns to PENDING and
+   * the review note is cleared.
+   */
+  @Post(':id/resubmit')
+  @HttpCode(200)
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async resubmit(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    if (organization.id !== id) {
+      throw new TraceabilityRuleException(
+        'You can only resubmit your own registration',
+      );
+    }
+    return describe(await this.organizations.resubmitRegistration(actor, organization));
+  }
+
+  /**
    * Files a certificate against a registration application. The applicant
    * uploads its RDB / FDA / import certificates here while the application is
    * pending; the regulator sees them in the review screen.
+   *
+   * Guarded by VIEW_OPERATIONS rather than MANAGE_CATALOG: VIEW_OPERATIONS is
+   * inside every organization-type ceiling (WAREHOUSE, DISTRIBUTOR, RETAILER,
+   * SHOP included), so a newly registered business of any type can upload its
+   * own registration documents without getting a 403. The ownership check
+   * below (`organization.id !== id`) is what actually enforces that you can
+   * only file against your own application — the capability just proves you
+   * hold an authenticated account.
    */
   @Post(':id/documents')
-  @RequireCapability(Capability.MANAGE_CATALOG)
+  @RequireCapability(Capability.VIEW_OPERATIONS)
   @UseInterceptors(FileInterceptor('file'))
   async attachDocument(
     @ActingOrg() organization: Organization,
@@ -160,11 +194,16 @@ export class OrganizationController {
   /**
    * The certificates filed against a registration. The applicant may read its
    * own; the licensing authority may read any, which is what screening needs.
+   *
+   * OptionalActingOrg rather than ActingOrg so that SYSTEM_ADMIN users (who
+   * have no organization of their own) can still view documents when screening
+   * pending registrations. The service guards access: null reader means the
+   * caller holds ADMINISTER_PLATFORM and may read everything.
    */
   @Get(':id/documents')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async documents(
-    @ActingOrg() organization: Organization,
+    @OptionalActingOrg() organization: Organization | null,
     @Param('id', ParseIntPipe) id: number,
   ) {
     const rows = await this.organizations.documentsFor(organization, id);
@@ -262,6 +301,23 @@ export class OrganizationController {
   ) {
     return describe(await this.organizations.grantRegulatoryStanding(id));
   }
+
+  /**
+   * Permanently deletes an organization and all data owned by it.
+   *
+   * Guards:
+   *   - ADMINISTER_PLATFORM capability required (SYSTEM_ADMIN only).
+   *   - Service-level safety checks block deletion if the org has users,
+   *     products, or a linked regulatory-authority row.
+   *
+   * Intended for seed-data and test cleanup, not routine operation.
+   */
+  @Delete(':id')
+  @HttpCode(204)
+  @RequireCapability(Capability.ADMINISTER_PLATFORM)
+  async purge(@Param('id', ParseIntPipe) id: number): Promise<void> {
+    await this.organizations.purge(id);
+  }
 }
 
 function describe(organization: Organization) {
@@ -281,8 +337,10 @@ function describe(organization: Organization) {
     sector: organization.sector,
     cell: organization.cell,
     village: organization.village,
+    industrySector: organization.industrySector,
     onboardingStatus: organization.onboardingStatus,
     rejectionReason: organization.rejectionReason,
+    reviewNote: organization.reviewNote,
     createdAt: organization.createdAt,
   };
 }

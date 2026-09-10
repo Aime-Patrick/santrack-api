@@ -97,6 +97,10 @@ function service(organization: Record<string, unknown> | null) {
     }),
   };
 
+  const regulatoryAuthorities = {
+    find: jest.fn().mockResolvedValue([]),
+  };
+
   return {
     instance: new OrganizationService(
       organizations as never,
@@ -105,6 +109,7 @@ function service(organization: Record<string, unknown> | null) {
       facilities as never,
       documents as never,
       owners as never,
+      regulatoryAuthorities as never,
       storage as never,
       sites as never,
       licenses as never,

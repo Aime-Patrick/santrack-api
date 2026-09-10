@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Patch, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Public, RequireCapability } from '../../common/decorators';
 import { Capability } from '../capabilities';
@@ -10,8 +10,17 @@ import {
   RequestPasswordResetDto,
   ResetPasswordDto,
 } from '../dto/auth.dto';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { User } from '../entities/user.entity';
 import { AuthService } from '../services/auth.service';
+
+class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  @MaxLength(120)
+  fullName?: string;
+}
 
 @ApiTags('Auth')
 @Controller('api/auth')
@@ -77,6 +86,16 @@ export class AuthController {
   @Get('me')
   async me(@CurrentUser() user: User) {
     return this.auth.me(user);
+  }
+
+  /** Self-service: update the caller's own display name. */
+  @Patch('me')
+  @HttpCode(200)
+  async updateProfile(
+    @CurrentUser() user: User,
+    @Body() dto: UpdateProfileDto,
+  ) {
+    return this.auth.updateProfile(user, dto);
   }
 
   /**

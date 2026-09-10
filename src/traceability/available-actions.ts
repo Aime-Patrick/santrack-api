@@ -9,6 +9,7 @@ import {
   isTerminal,
 } from '../item/item.enums';
 import { Organization } from '../organization/entities/organization.entity';
+import { OrganizationType } from '../organization/organization-type.enum';
 
 /**
  * Everything that can be done to one identity from its own page.
@@ -64,6 +65,19 @@ interface Context {
 }
 
 /**
+ * Organisation types whose stock-in workflow is fully automatic.
+ *
+ * RETAILER and SHOP receive containers through the Stock In screen, which
+ * handles every packaging state transition internally. Showing them PACK, OPEN
+ * and REMOVE_CONTENT on the trace page would expose the implementation detail
+ * they are explicitly not meant to operate manually.
+ */
+const STOCK_IN_ORGS: readonly OrganizationType[] = [
+  OrganizationType.RETAILER,
+  OrganizationType.SHOP,
+];
+
+/**
  * What this caller may do to this item, now.
  *
  * Two different questions are answered here and the difference matters.
@@ -76,6 +90,11 @@ interface Context {
  */
 export function availableActions(context: Context): AvailableAction[] {
   const { item, organization, capabilities } = context;
+
+  /** True when manual packaging operations must not be surfaced to this org. */
+  const usesAutomaticStockIn =
+    organization != null &&
+    STOCK_IN_ORGS.includes(organization.type as OrganizationType);
 
   const holds = (capability: Capability) => capabilities.includes(capability);
   const inCustody = organization != null && item.holder?.id === organization.id;
@@ -125,37 +144,43 @@ export function availableActions(context: Context): AvailableAction[] {
   offer(Capability.VIEW_OPERATIONS, ItemAction.PRINT_LABEL, true);
 
   // ── Packaging ───────────────────────────────────────────────────────────
-  offer(
-    Capability.HANDLE_PACKAGING,
-    ItemAction.PACK,
-    !isPackage
-      ? 'Only a container holds other items. This is a single unit'
-      : item.sealState === SealState.SEALED
-        ? 'This container is sealed. Open it before adding to it'
-        : operable(),
-  );
-
-  offer(
-    Capability.HANDLE_PACKAGING,
-    ItemAction.OPEN,
-    !isPackage
-      ? 'Only a container can be opened. This is a single unit'
-      : item.sealState !== SealState.SEALED
-        ? 'This container is already open'
-        : operable(),
-  );
-
-  offer(
-    Capability.HANDLE_PACKAGING,
-    ItemAction.REMOVE_CONTENT,
-    !isPackage
-      ? 'Only a container has contents. This is a single unit'
-      : item.sealState === SealState.SEALED
-        ? 'Open the container before taking anything out of it'
-        : item.sealState === SealState.EMPTY
-          ? 'This container is already empty'
+  // RETAILER / SHOP receive containers through the Stock In screen, which
+  // handles all packaging transitions automatically. Suppress manual packaging
+  // actions for those organisation types so the trace page never asks them to
+  // open/pack/remove manually.
+  if (!usesAutomaticStockIn) {
+    offer(
+      Capability.HANDLE_PACKAGING,
+      ItemAction.PACK,
+      !isPackage
+        ? 'Only a container holds other items. This is a single unit'
+        : item.sealState === SealState.SEALED
+          ? 'This container is sealed. Open it before adding to it'
           : operable(),
-  );
+    );
+
+    offer(
+      Capability.HANDLE_PACKAGING,
+      ItemAction.OPEN,
+      !isPackage
+        ? 'Only a container can be opened. This is a single unit'
+        : item.sealState !== SealState.SEALED
+          ? 'This container is already open'
+          : operable(),
+    );
+
+    offer(
+      Capability.HANDLE_PACKAGING,
+      ItemAction.REMOVE_CONTENT,
+      !isPackage
+        ? 'Only a container has contents. This is a single unit'
+        : item.sealState === SealState.SEALED
+          ? 'Open the container before taking anything out of it'
+          : item.sealState === SealState.EMPTY
+            ? 'This container is already empty'
+            : operable(),
+    );
+  }
 
   // ── Movement ────────────────────────────────────────────────────────────
   offer(
