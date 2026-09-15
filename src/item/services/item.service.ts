@@ -21,6 +21,7 @@ import { ProductionOrder } from '../../manufacturing/entities/production-order.e
 import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
+import { normalizeIdentityCode } from '../identity-code';
 import { TraceableItem } from '../entities/traceable-item.entity';
 import {
   ItemKind,
@@ -74,14 +75,15 @@ export class ItemService {
   async require(qrCode: string, manager?: EntityManager): Promise<TraceableItem> {
     const repo = manager ? manager.getRepository(TraceableItem) : this.items;
     const scanRelations = { parent: true, pool: true } as const;
+    const identity = normalizeIdentityCode(qrCode);
 
     const item =
-      (await repo.findOne({ where: { qrCode }, relations: scanRelations })) ??
-      (await repo.findOne({ where: { code: qrCode }, relations: scanRelations }));
+      (await repo.findOne({ where: { qrCode: identity }, relations: scanRelations })) ??
+      (await repo.findOne({ where: { code: identity }, relations: scanRelations }));
     if (item) return item;
 
     // 3. Try product GTIN (manufacturer barcode)
-    const productByGtin = await this.products.findOne({ where: { gtin: qrCode } });
+    const productByGtin = await this.products.findOne({ where: { gtin: identity } });
     if (productByGtin) {
       const itemByGtin = await repo.findOne({
         where: {
@@ -94,7 +96,7 @@ export class ItemService {
       if (itemByGtin) return itemByGtin;
 
       await this.rejectProductBarcodeAsIdentity(
-        qrCode,
+        identity,
         productByGtin.id,
         productByGtin.sku,
         'GTIN',
@@ -103,7 +105,7 @@ export class ItemService {
     }
 
     // 4. Try product SKU
-    const productBySku = await this.products.findOne({ where: { sku: qrCode } });
+    const productBySku = await this.products.findOne({ where: { sku: identity } });
     if (productBySku) {
       const itemBySku = await repo.findOne({
         where: {
@@ -116,7 +118,7 @@ export class ItemService {
       if (itemBySku) return itemBySku;
 
       await this.rejectProductBarcodeAsIdentity(
-        qrCode,
+        identity,
         productBySku.id,
         productBySku.sku,
         'SKU',
@@ -212,7 +214,7 @@ export class ItemService {
    * above all - asks this instead, and treats a product barcode as a product.
    */
   async findByIdentity(code: string): Promise<TraceableItem | null> {
-    const trimmed = code.trim();
+    const trimmed = normalizeIdentityCode(code);
     if (!trimmed) return null;
 
     return (
@@ -489,7 +491,7 @@ export class ItemService {
         batch,
         quantity: 0,
         status: ItemStatus.ACTIVE,
-        sealState: SealState.SEALED,
+        sealState: SealState.EMPTY,
         expiresOn: batch?.expiresOn ?? null,
         holder: organization,
         location,

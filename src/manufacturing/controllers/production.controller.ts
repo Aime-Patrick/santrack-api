@@ -186,6 +186,7 @@ export function describeOrder(
     completedAt: order.completedAt,
     batchId: order.batch?.id ?? null,
     batchCode: order.batch?.batchCode ?? null,
+    batchStatus: order.batch?.status ?? null,
     notes: order.notes,
     createdAt: order.createdAt,
     materials: extras?.materials?.map(describeMaterialRow),

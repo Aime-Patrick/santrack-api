@@ -72,6 +72,12 @@ const recalledItem = {
   batch: { batchCode: 'FG-2026-045', status: BatchStatus.RECALLED },
 };
 
+const generatedItem = {
+  ...genuine,
+  status: ItemStatus.GENERATED,
+  batch: null,
+};
+
 describe('a consumer scan leaves a record', () => {
   it('appends VERIFIED against the scanned identity', async () => {
     const h = harness(genuine);
@@ -110,6 +116,18 @@ describe('a consumer scan leaves a record', () => {
 
     expect(answer.recalled).toBe(true);
     expect(answer.blocked).toBe(true);
+  });
+});
+
+describe('a minted but unassigned code', () => {
+  it('does not present a label as a finished product', async () => {
+    const h = harness(generatedItem);
+
+    const answer = await h.service.verify('qr-100');
+
+    expect(answer.batchCode).toBeNull();
+    expect(answer.blocked).toBe(true);
+    expect(answer.verdict).toContain('not been assigned to a production lot');
   });
 });
 

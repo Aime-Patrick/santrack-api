@@ -271,9 +271,12 @@ export class LicenseService {
     }
 
     const license = await this.requireOwn(organization, licenseId);
-    if (license.status !== LicenseStatus.DRAFT) {
+    if (
+      license.status !== LicenseStatus.DRAFT &&
+      license.status !== LicenseStatus.CHANGES_REQUESTED
+    ) {
       throw new TraceabilityRuleException(
-        `${license.licenseNumber} is ${license.status} - documents can only be attached while it is a draft`,
+        `${license.licenseNumber} is ${license.status} - documents can only be attached while it is a draft or awaiting changes`,
       );
     }
 
@@ -319,7 +322,10 @@ export class LicenseService {
   ): Promise<License> {
     return this.dataSource.transaction(async (manager) => {
       const license = await this.requireOwn(organization, licenseId, manager);
-      if (license.status !== LicenseStatus.DRAFT) {
+      if (
+        license.status !== LicenseStatus.DRAFT &&
+        license.status !== LicenseStatus.CHANGES_REQUESTED
+      ) {
         throw new TraceabilityRuleException(
           `${license.licenseNumber} is already ${license.status}`,
         );
@@ -454,6 +460,21 @@ export class LicenseService {
         });
       }
 
+      if (dto.decision === ReviewDecision.REQUEST_CHANGES) {
+        if (!dto.reason?.trim()) {
+          throw new TraceabilityRuleException(
+            'A changes request needs a reason - the applicant has to know what to fix',
+          );
+        }
+        license.reviewedBy = actor;
+        license.issuedBy = regulator;
+        return this.transition(manager, license, actor, {
+          to: LicenseStatus.CHANGES_REQUESTED,
+          event: LicenseEventType.CHANGES_REQUESTED,
+          reason: dto.reason,
+        });
+      }
+
       const issuedOn = today();
       license.issuedBy = regulator;
       license.reviewedBy = actor;
@@ -470,7 +491,7 @@ export class LicenseService {
 
     // Notify the applicant's organization outside the transaction — notification
     // and email failures must not roll back the licence decision.
-    this.notifyApplicant(saved, dto.decision).catch((err) =>
+    this.notifyApplicant(saved, dto.decision, dto.reason).catch((err) =>
       this.logger.error(`Failed to notify applicant about ${saved.licenseNumber}:`, err),
     );
 
@@ -1146,6 +1167,11 @@ export class LicenseService {
         title: `Licence Approved: ${licenceNum}`,
         message: `Your ${categoryName} licence (${licenceNum}) has been approved. ${license.expiresOn ? `Valid until ${license.expiresOn}.` : ''}`,
         notifType: 'SUCCESS',
+      },
+      REQUEST_CHANGES: {
+        title: `Changes requested: ${licenceNum}`,
+        message: `Your ${categoryName} licence application (${licenceNum}) needs changes. ${reason ?? license.statusReason ?? 'Please update the application and resubmit.'}`,
+        notifType: 'WARNING',
       },
       REJECT: {
         title: `Licence Rejected: ${licenceNum}`,

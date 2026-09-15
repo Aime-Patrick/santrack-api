@@ -66,10 +66,19 @@ export class RecallService {
     private readonly regulatoryCases: RegulatoryCaseService,
   ) {}
 
-  /** List all recalled batches with impact summary. */
-  async list() {
+  /**
+   * List recalled batches.
+   * - Regulators see every recall across the platform.
+   * - Trading organisations see only recalls for batches they manufactured.
+   */
+  async list(viewer: Organization) {
+    const where =
+      viewer.type === OrganizationType.REGULATOR
+        ? { status: BatchStatus.RECALLED }
+        : { status: BatchStatus.RECALLED, manufacturer: { id: viewer.id } };
+
     const recalled = await this.batches.find({
-      where: { status: BatchStatus.RECALLED },
+      where,
       relations: { manufacturer: true, product: true, facility: true },
       order: { statusChangedAt: 'DESC' },
     });
@@ -82,8 +91,11 @@ export class RecallService {
     return results;
   }
 
-  /** One recalled lot with full impact — for the recall detail page. */
-  async get(batchId: number) {
+  /**
+   * One recalled lot with full impact — for the recall detail page.
+   * Trading orgs may only view recalls for their own batches.
+   */
+  async get(batchId: number, viewer: Organization) {
     const batch = await this.batches.findOne({
       where: { id: batchId },
       relations: { manufacturer: true, product: true, facility: true },
@@ -95,6 +107,12 @@ export class RecallService {
       throw new TraceabilityRuleException(
         `Batch ${batch.batchCode} is ${batch.status}, not under recall`,
       );
+    }
+    if (
+      viewer.type !== OrganizationType.REGULATOR &&
+      batch.manufacturer?.id !== viewer.id
+    ) {
+      throw new NotFoundEntityException('Batch', batchId);
     }
     return this.describeRecall(batch);
   }

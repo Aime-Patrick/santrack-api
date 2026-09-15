@@ -407,6 +407,8 @@ function describeInfoRequest(req: RegistrationInfoRequest) {
     status: req.status,
     respondedAt: req.respondedAt,
     createdAt: req.createdAt,
+    responseData: req.responseData ?? null,
+    responseAttachmentFilename: req.responseAttachmentFilename ?? null,
   };
 }
 

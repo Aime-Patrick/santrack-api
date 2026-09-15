@@ -9,6 +9,8 @@ import { BatchService } from '../../batch/services/batch.service';
 import { NotFoundEntityException, TraceabilityRuleException } from '../../common/errors';
 import { TraceableItem } from '../../item/entities/traceable-item.entity';
 import { Organization } from '../../organization/entities/organization.entity';
+import { NotificationType } from '../../notifications/entities/notification.entity';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
 import { EventType, RELEASE_EVENTS } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
@@ -44,8 +46,11 @@ export class QualityInspectionService {
     private readonly dataSource: DataSource,
     @InjectRepository(QualityInspection)
     private readonly inspections: Repository<QualityInspection>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
     private readonly recorder: EventRecorder,
     private readonly batchService: BatchService,
+    private readonly notifications: NotificationsGateway,
   ) {}
 
   async create(
@@ -265,6 +270,37 @@ export class QualityInspectionService {
         { status: 'QUARANTINED' as never },
       );
     }
+
+    // Notify all users in the organisation about the QC verdict so production
+    // teams know whether the lot is cleared, needs rework, or is held.
+    await this.notifyVerdict(batch, result, inspection.notes ?? null);
+  }
+
+  private async notifyVerdict(
+    batch: Batch,
+    result: InspectionResult,
+    notes: string | null,
+  ): Promise<void> {
+    if (!batch.manufacturer?.id) return;
+
+    const orgUsers = await this.users.find({
+      where: { organization: { id: batch.manufacturer.id } },
+    });
+    if (orgUsers.length === 0) return;
+
+    const { type, title, message } = verdictNotification(batch.batchCode, result, notes);
+
+    await Promise.allSettled(
+      orgUsers.map((u) =>
+        this.notifications.sendToUser(u.id, {
+          type,
+          title,
+          message,
+          module: 'manufacturing',
+          actionUrl: '/dashboard/manufacturing/quality',
+        }),
+      ),
+    );
   }
 }
 
@@ -293,5 +329,39 @@ function outcomeEventFor(result: InspectionResult): EventType | null {
     // QC_INSPECTED entry already says what was decided.
     case InspectionResult.QUARANTINE:
       return null;
+  }
+}
+
+function verdictNotification(
+  batchCode: string,
+  result: InspectionResult,
+  notes: string | null,
+): { type: string; title: string; message: string } {
+  const suffix = notes ? ` — ${notes}` : '';
+  switch (result) {
+    case InspectionResult.APPROVED:
+      return {
+        type: NotificationType.SUCCESS,
+        title: `Lot ${batchCode} approved`,
+        message: `Quality inspection passed. The lot is cleared for packaging and registration${suffix}.`,
+      };
+    case InspectionResult.REJECTED:
+      return {
+        type: NotificationType.ERROR,
+        title: `Lot ${batchCode} rejected`,
+        message: `Quality inspection failed. The lot cannot be released until re-inspected after rework${suffix}.`,
+      };
+    case InspectionResult.REWORK:
+      return {
+        type: NotificationType.WARNING,
+        title: `Lot ${batchCode} sent back for rework`,
+        message: `Quality inspection requires rework before the lot can be approved${suffix}.`,
+      };
+    case InspectionResult.QUARANTINE:
+      return {
+        type: NotificationType.WARNING,
+        title: `Lot ${batchCode} quarantined`,
+        message: `The lot has been placed under quarantine pending a decision${suffix}.`,
+      };
   }
 }

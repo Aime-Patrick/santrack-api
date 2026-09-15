@@ -30,6 +30,7 @@ describe('what a licence permits', () => {
       LicenseStatus.DRAFT,
       LicenseStatus.SUBMITTED,
       LicenseStatus.UNDER_REVIEW,
+      LicenseStatus.CHANGES_REQUESTED,
       LicenseStatus.REJECTED,
     ]) {
       expect(permitsOperation(status)).toBe(false);

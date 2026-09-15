@@ -10,6 +10,8 @@ export enum LicenseStatus {
   SUBMITTED = 'SUBMITTED',
   /** A named reviewer is screening it. */
   UNDER_REVIEW = 'UNDER_REVIEW',
+  /** Regulator asked for corrections; applicant may edit and resubmit. */
+  CHANGES_REQUESTED = 'CHANGES_REQUESTED',
   /** Screening failed. The reason is recorded and the applicant may reapply. */
   REJECTED = 'REJECTED',
   /** Approved and within its dates. The only state that permits operating. */
@@ -75,6 +77,7 @@ export enum LicenseEventType {
   REVIEW_STARTED = 'REVIEW_STARTED',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
+  CHANGES_REQUESTED = 'CHANGES_REQUESTED',
   SUSPENDED = 'SUSPENDED',
   REINSTATED = 'REINSTATED',
   REVOKED = 'REVOKED',

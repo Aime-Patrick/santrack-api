@@ -128,11 +128,13 @@ describe('planning a production run', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,  // users repo — not exercised in these tests
       sequences as never,
       licensing as never,
       eligibility as never,
       {} as never,
       {} as never,
+      { sendToUser: jest.fn().mockResolvedValue(undefined) } as never,
     );
 
     const of = (entity: string) => saved.filter((row) => row.__entity === entity);

@@ -103,11 +103,13 @@ function harness(options: {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,  // users repo — not exercised in these tests
     {} as never,
     licensing as never,
     eligibility as never,
     batches,
     recorder,
+    { sendToUser: jest.fn().mockResolvedValue(undefined) } as never,
   );
 
   return {

@@ -18,6 +18,8 @@ import { LicenseEnforcementService } from '../../licensing/services/license-enfo
 import { ProductionEligibilityService } from '../../licensing/services/production-eligibility.service';
 import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
+import { NotificationType } from '../../notifications/entities/notification.entity';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
 import { Product } from '../../product/entities/product.entity';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
@@ -74,6 +76,8 @@ export class ProductionService {
     private readonly orderMaterials: Repository<ProductionOrderMaterial>,
     @InjectRepository(ProductionEvent)
     private readonly events: Repository<ProductionEvent>,
+    @InjectRepository(User)
+    private readonly users: Repository<User>,
     private readonly sequences: SequenceService,
     private readonly licensing: LicenseEnforcementService,
     /**
@@ -84,6 +88,7 @@ export class ProductionService {
     private readonly eligibility: ProductionEligibilityService,
     private readonly batches: BatchService,
     private readonly recorder: EventRecorder,
+    private readonly notifications: NotificationsGateway,
   ) {}
 
   // --------------------------------------------------------------- workflow
@@ -534,6 +539,29 @@ export class ProductionService {
         );
       }
 
+      // DR-08 invariant: every code minted for this order's product must be
+      // linked to the batch before completion.  If codes remain GENERATED with
+      // no batch_id the assign step was skipped and they will be orphaned -
+      // invisible to stock counts, packing, and dispatch forever.
+      if (order.batch) {
+        const linkedCount = await manager
+          .createQueryBuilder(TraceableItem, 'item')
+          .where('item.batch_id = :batchId', { batchId: order.batch.id })
+          .andWhere('item.status IN (:...statuses)', {
+            statuses: ['ASSIGNED', 'ACTIVE'],
+          })
+          .getCount();
+
+        if (linkedCount === 0) {
+          throw new TraceabilityRuleException(
+            `Order ${order.orderNumber} has a batch (${order.batch.batchCode}) but no ` +
+              'traceable codes are linked to it. Assign a code pool before completing ' +
+              'production — otherwise every printed label becomes an orphan that can ' +
+              'never be packed or traced.',
+          );
+        }
+      }
+
       // The lot was opened when the order was planned, so it carries no dates
       // yet: nothing had been made. Completion is the moment it was, which is
       // where the manufacture date belongs and where the caller's shelf date
@@ -579,6 +607,30 @@ export class ProductionService {
           actor,
           quantity: producedQuantity,
           notes: `Produced ${producedQuantity} units — lot awaiting quality control`,
+        });
+
+        // Notify org users so QC officers know a lot is waiting for inspection.
+        // Fire-and-forget outside the transaction — a failed notification must
+        // not roll back a completed production run.
+        const batch = order.batch;
+        const orgId = organization.id;
+        setImmediate(async () => {
+          try {
+            const orgUsers = await this.users.find({ where: { organization: { id: orgId } } });
+            await Promise.allSettled(
+              orgUsers.map((u) =>
+                this.notifications.sendToUser(u.id, {
+                  type: NotificationType.WARNING,
+                  title: `Lot ${batch.batchCode} awaiting QC`,
+                  message: `Production completed: ${producedQuantity} units of lot ${batch.batchCode} are ready for quality inspection.`,
+                  module: 'manufacturing',
+                  actionUrl: '/dashboard/manufacturing/quality',
+                }),
+              ),
+            );
+          } catch {
+            // swallow — notification failure must not affect production records
+          }
         });
       }
 

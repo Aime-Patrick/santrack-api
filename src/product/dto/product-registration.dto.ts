@@ -60,6 +60,7 @@ export class ApplyForProductRegistrationDto {
 
 export enum ProductReviewDecision {
   APPROVE = 'APPROVE',
+  REQUEST_CHANGES = 'REQUEST_CHANGES',
   REJECT = 'REJECT',
 }
 

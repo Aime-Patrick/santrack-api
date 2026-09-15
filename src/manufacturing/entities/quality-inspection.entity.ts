@@ -43,7 +43,7 @@ export class QualityInspection {
   @Column({ type: 'enum', enum: InspectionResult, nullable: false })
   result: InspectionResult;
 
-  @Column({ type: 'varchar', length: 1000, nullable: true })
+  @Column({ type: 'text', nullable: true })
   notes: string | null;
 
   @CreateDateColumn({ name: 'tested_at', type: 'timestamptz' })

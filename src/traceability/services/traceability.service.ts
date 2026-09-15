@@ -5,7 +5,8 @@ import { Batch } from '../../batch/entities/batch.entity';
 import { BatchStatus } from '../../batch/batch-status.enum';
 import { NotFoundEntityException, TraceabilityRuleException } from '../../common/errors';
 import { TraceableItem, today } from '../../item/entities/traceable-item.entity';
-import { ItemStatus, blocksSale } from '../../item/item.enums';
+import { normalizeIdentityCode } from '../../item/identity-code';
+import { ItemStatus, ItemKind, blocksSale } from '../../item/item.enums';
 import { QualityInspection } from '../../manufacturing/entities/quality-inspection.entity';
 import { InspectionResult } from '../../manufacturing/manufacturing.enums';
 import { ProductionOrder, ProductionOrderMaterial } from '../../manufacturing/entities/production-order.entity';
@@ -150,6 +151,13 @@ export interface VerificationResponse {
   recalled: boolean;
   blocked: boolean;
   verdict: string;
+  /**
+   * How many times this code has been presented to the public verify endpoint,
+   * including this scan. Used for a careful consumer clone / display-stock signal.
+   */
+  scanCount: number;
+  /** True when this response is the first recorded public check of the code. */
+  firstScan: boolean;
 }
 
 export interface QualityInspectionSummary {
@@ -300,7 +308,7 @@ export class TraceabilityService {
 
     // Before the early return, so a code that resolves to nothing is counted.
     // That is the case this exists for.
-    await this.countVerificationAttempt(normalized, item);
+    const attempt = await this.countVerificationAttempt(normalized, item);
 
     if (!item) {
       return {
@@ -319,6 +327,8 @@ export class TraceabilityService {
         recalled: false,
         blocked: false,
         verdict: unknownVerifyVerdict(normalized),
+        scanCount: attempt.attempts,
+        firstScan: attempt.attempts === 1,
       };
     }
 
@@ -346,6 +356,8 @@ export class TraceabilityService {
       recalled,
       blocked,
       verdict: verdict(item, recalled, expired),
+      scanCount: attempt.attempts,
+      firstScan: attempt.attempts === 1,
     };
   }
 
@@ -432,12 +444,12 @@ export class TraceabilityService {
   private async countVerificationAttempt(
     token: string,
     item: TraceableItem | null,
-  ): Promise<void> {
+  ): Promise<{ attempts: number }> {
     try {
       // Written as raw SQL because the count has to accumulate. TypeORM's
       // orUpdate() sets each column to the excluded row's value, which would
       // pin `attempts` at 1 for ever and silently defeat the whole point.
-      await this.attempts.query(
+      const rows = (await this.attempts.query(
         `
         INSERT INTO "verification_attempts"
           ("token", "known", "item_id", "attempts", "first_seen_at", "last_seen_at")
@@ -447,11 +459,16 @@ export class TraceabilityService {
           "last_seen_at" = now(),
           "known"        = EXCLUDED."known",
           "item_id"      = EXCLUDED."item_id"
+        RETURNING "attempts"
         `,
         [token.slice(0, MAX_VERIFICATION_TOKEN), item !== null, item?.id ?? null],
-      );
+      )) as Array<{ attempts: number | string }>;
+
+      const attempts = Number(rows?.[0]?.attempts ?? 1);
+      return { attempts: Number.isFinite(attempts) && attempts > 0 ? attempts : 1 };
     } catch {
       // Deliberately swallowed. See the note above.
+      return { attempts: 0 };
     }
   }
 
@@ -674,8 +691,9 @@ export class TraceabilityService {
       }
     }
 
-    // 3. Stage Metrics calculation
-    const totalUnits = items.length;
+    // 3. Stage Metrics calculation — packages are containers, not countable units
+    const unitItems = items.filter((item) => item.kind === ItemKind.UNIT);
+    const totalUnits = unitItems.reduce((sum, item) => sum + item.quantity, 0);
     let producedUnits = 0;
     let inTransitUnits = 0;
     let inStockUnits = 0;
@@ -686,34 +704,34 @@ export class TraceabilityService {
     let destroyedUnits = 0;
     let recalledUnits = 0;
 
-    for (const item of items) {
+    for (const item of unitItems) {
       if (item.status !== ItemStatus.CANCELLED) {
-        producedUnits++;
+        producedUnits += item.quantity;
       }
       switch (item.status) {
         case ItemStatus.IN_TRANSIT:
-          inTransitUnits++;
+          inTransitUnits += item.quantity;
           break;
         case ItemStatus.ACTIVE:
-          inStockUnits++;
+          inStockUnits += item.quantity;
           break;
         case ItemStatus.RESERVED:
-          reservedUnits++;
+          reservedUnits += item.quantity;
           break;
         case ItemStatus.SOLD:
-          soldUnits++;
+          soldUnits += item.quantity;
           break;
         case ItemStatus.QUARANTINED:
-          quarantinedUnits++;
+          quarantinedUnits += item.quantity;
           break;
         case ItemStatus.DAMAGED:
-          damagedUnits++;
+          damagedUnits += item.quantity;
           break;
         case ItemStatus.DESTROYED:
-          destroyedUnits++;
+          destroyedUnits += item.quantity;
           break;
         case ItemStatus.RECALLED:
-          recalledUnits++;
+          recalledUnits += item.quantity;
           break;
       }
     }
@@ -793,6 +811,7 @@ export class TraceabilityService {
     >();
 
     for (const item of items) {
+      if (item.kind !== ItemKind.UNIT) continue;
       const orgId = item.holder?.id ?? null;
       const isOrigin = batch.manufacturer?.id === orgId;
       const key = `${orgId ?? 'none'}-${item.location?.id ?? 'none'}`;
@@ -812,8 +831,8 @@ export class TraceabilityService {
       }
 
       const node = custodyMap.get(key)!;
-      node.totalUnits++;
-      node.byStatus[item.status] = (node.byStatus[item.status] ?? 0) + 1;
+      node.totalUnits += item.quantity;
+      node.byStatus[item.status] = (node.byStatus[item.status] ?? 0) + item.quantity;
     }
 
     const custodyNodes = Array.from(custodyMap.values()).sort(
@@ -1035,6 +1054,10 @@ function verdict(item: TraceableItem, recalled: boolean, expired: boolean): stri
     return `Expired on ${item.expiresOn}. Do not use this product.`;
   }
   switch (item.status) {
+    case ItemStatus.GENERATED:
+      return 'This code is genuine, but it has not been assigned to a production lot yet.';
+    case ItemStatus.ASSIGNED:
+      return 'This code is assigned to a production run, but production is not complete yet.';
     case ItemStatus.DESTROYED:
       return (
         'This item was recorded as destroyed. A product bearing this code ' +
@@ -1055,31 +1078,12 @@ function verdict(item: TraceableItem, recalled: boolean, expired: boolean): stri
   }
 }
 
-const UUID_TOKEN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
  * Peel phone-camera / paste noise off a verify token before lookup.
  * Shapes QR UUIDs and /verify/… links; leaves ST- serials intact.
  */
 function normalizeVerifyToken(raw: string): string {
-  let token = (raw ?? '').trim().replace(/^["']|["']$/g, '');
-  try {
-    token = decodeURIComponent(token);
-  } catch {
-    // keep raw
-  }
-  token = token.trim();
-
-  if (token.includes('/verify/')) {
-    token =
-      token.split('/verify/').pop()?.split('?')[0].split('#')[0].trim() ?? token;
-  }
-
-  if (UUID_TOKEN.test(token)) {
-    return token.toLowerCase();
-  }
-  return token;
+  return normalizeIdentityCode(raw);
 }
 
 /**

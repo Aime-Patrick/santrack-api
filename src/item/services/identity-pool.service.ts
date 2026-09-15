@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
@@ -73,6 +74,7 @@ const UPDATE_CHUNK = 1000;
 @Injectable()
 export class IdentityPoolService {
   private readonly logger = new Logger(IdentityPoolService.name);
+  private readonly appPublicUrl: string;
 
   constructor(
     private readonly dataSource: DataSource,
@@ -84,7 +86,13 @@ export class IdentityPoolService {
     private readonly products: Repository<Product>,
     private readonly codeGenerator: ItemCodeGenerator,
     private readonly recorder: EventRecorder,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.appPublicUrl = (
+      config.get<string>('appPublicUrl') ??
+      'http://localhost:3000'
+    ).replace(/\/$/, '');
+  }
 
   /**
    * Accepts the request, then mints in the background.
@@ -685,7 +693,9 @@ export class IdentityPoolService {
     const headers = ['Serial Code', 'QR Payload / URL', 'Status', 'Product Name', 'SKU', 'Batch Code', 'Created At'];
     const rows = items.map((item) => [
       item.code,
-      item.qrCode,
+      // Encode the public verify URL so one printed QR works for consumers and
+      // for every authenticated scan stage (stock, sale, recall, field check).
+      `${this.appPublicUrl}/verify/${encodeURIComponent(item.qrCode)}`,
       item.status,
       pool.product?.name ?? '',
       pool.product?.sku ?? '',

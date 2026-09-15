@@ -154,9 +154,12 @@ export class ProductRegistrationService {
     }
 
     const reg = await this.requireOwn(organization, registrationId);
-    if (reg.status !== ProductRegistrationStatus.DRAFT) {
+    if (
+      reg.status !== ProductRegistrationStatus.DRAFT &&
+      reg.status !== ProductRegistrationStatus.CHANGES_REQUESTED
+    ) {
       throw new TraceabilityRuleException(
-        `${reg.registrationNumber} is ${reg.status} - documents can only be attached while in draft`,
+        `${reg.registrationNumber} is ${reg.status} - documents can only be attached while in draft or awaiting changes`,
       );
     }
 
@@ -202,7 +205,10 @@ export class ProductRegistrationService {
   ): Promise<ProductRegistration> {
     return this.dataSource.transaction(async (manager) => {
       const reg = await this.requireOwn(organization, registrationId, manager);
-      if (reg.status !== ProductRegistrationStatus.DRAFT) {
+      if (
+        reg.status !== ProductRegistrationStatus.DRAFT &&
+        reg.status !== ProductRegistrationStatus.CHANGES_REQUESTED
+      ) {
         throw new TraceabilityRuleException(
           `${reg.registrationNumber} is already ${reg.status}`,
         );
@@ -348,6 +354,21 @@ export class ProductRegistrationService {
         return this.transition(manager, reg, actor, {
           to: ProductRegistrationStatus.REJECTED,
           event: ProductRegistrationEventType.REJECTED,
+          reason: dto.reason,
+        });
+      }
+
+      if (dto.decision === ProductReviewDecision.REQUEST_CHANGES) {
+        if (!dto.reason?.trim()) {
+          throw new TraceabilityRuleException(
+            'A changes request needs a reason - the applicant has to know what to fix',
+          );
+        }
+        reg.reviewedBy = actor;
+        reg.issuedBy = regulator;
+        return this.transition(manager, reg, actor, {
+          to: ProductRegistrationStatus.CHANGES_REQUESTED,
+          event: ProductRegistrationEventType.CHANGES_REQUESTED,
           reason: dto.reason,
         });
       }

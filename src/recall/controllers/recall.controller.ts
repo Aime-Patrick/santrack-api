@@ -21,18 +21,21 @@ import { RecallService } from '../services/recall.service';
 export class RecallController {
   constructor(private readonly recalls: RecallService) {}
 
-  /** List all recalled batches across the platform. */
+  /** List recalled batches — scoped to caller's org, all for regulators. */
   @Get()
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async list() {
-    return this.recalls.list();
+  async list(@ActingOrg() organization: Organization) {
+    return this.recalls.list(organization);
   }
 
-  /** One recalled lot with full impact — used by the recall detail page. */
+  /** One recalled lot — scoped to caller's org, any batch for regulators. */
   @Get('batches/:batchId')
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async get(@Param('batchId', ParseIntPipe) batchId: number) {
-    return this.recalls.get(batchId);
+  async get(
+    @ActingOrg() organization: Organization,
+    @Param('batchId', ParseIntPipe) batchId: number,
+  ) {
+    return this.recalls.get(batchId, organization);
   }
 
   /** Pull a production lot, wherever its units currently sit. */

@@ -137,6 +137,7 @@ export class AttachDocumentDto {
 
 export enum ReviewDecision {
   APPROVE = 'APPROVE',
+  REQUEST_CHANGES = 'REQUEST_CHANGES',
   REJECT = 'REJECT',
 }
 

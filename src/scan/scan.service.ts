@@ -6,6 +6,7 @@ import { TraceableItem } from '../item/entities/traceable-item.entity';
 import { Location } from '../location/entities/location.entity';
 import { ItemService } from '../item/services/item.service';
 import { Organization } from '../organization/entities/organization.entity';
+import { OrganizationType } from '../organization/organization-type.enum';
 import { Product } from '../product/entities/product.entity';
 import { Transfer } from '../transfer/entities/transfer.entity';
 import { batchFromGs1, expiryFromGs1, normaliseGtin } from './gtin';
@@ -30,6 +31,9 @@ export interface ScanResult {
   /** What the scanner actually read, unchanged. */
   scanned: string;
   itemQrCode?: string;
+  /** When kind is ITEM — unit (bottle) vs package (box/pallet). */
+  itemKind?: 'UNIT' | 'PACKAGE';
+  packageType?: string;
   productId?: number;
   batchId?: number;
   locationId?: number;
@@ -88,6 +92,7 @@ export class ScanService {
   async resolve(code: string, organization: Organization): Promise<ScanResult> {
     const scanned = code.trim();
     const carried = this.carriedBy(scanned);
+    const isRegulator = organization.type === OrganizationType.REGULATOR;
 
     if (!scanned) {
       return { kind: ScanKind.UNKNOWN, scanned, describes: 'Nothing was scanned' };
@@ -106,10 +111,12 @@ export class ScanService {
           item.kind === 'PACKAGE'
             ? `${item.code} — a ${(item.packageType ?? 'container').toLowerCase()}`
             : `${item.code} — ${item.product?.name ?? 'a unit'}`,
+        itemKind: item.kind === 'PACKAGE' ? 'PACKAGE' : 'UNIT',
+        packageType: item.packageType ?? undefined,
       };
     }
 
-    const product = await this.findProduct(scanned, organization);
+    const product = await this.findProduct(scanned, organization, isRegulator);
     if (product) {
       return {
         kind: ScanKind.PRODUCT,
@@ -120,7 +127,7 @@ export class ScanService {
       };
     }
 
-    const batch = await this.findBatch(scanned, organization);
+    const batch = await this.findBatch(scanned, organization, isRegulator);
     if (batch) {
       return {
         kind: ScanKind.BATCH,
@@ -218,7 +225,15 @@ export class ScanService {
   }
 
   /**
-   * A product of the caller's own catalogue, by manufacturer barcode or SKU.
+   * A product, by manufacturer barcode or SKU.
+   *
+   * For trading organisations this is scoped to their own catalogue — answering
+   * "that GTIN belongs to Acme's product" would leak another business's data to
+   * anyone with a scanner.
+   *
+   * Regulators are exempt: their mandate is platform-wide, and a field officer
+   * scanning an EAN-13 from a product on a shop shelf must be able to identify
+   * it even if the regulator's own catalogue is empty.
    *
    * GTINs are compared in canonical form, so the EAN on the pack, the UPC on
    * the North American variant and the ITF-14 on the case all find the same
@@ -227,34 +242,41 @@ export class ScanService {
   private async findProduct(
     scanned: string,
     organization: Organization,
+    isRegulator: boolean,
   ): Promise<Product | null> {
-    const bySku = await this.products.findOne({
-      where: { organizationId: organization.id, sku: scanned },
-    });
-    if (bySku) {
-      return bySku;
+    if (!isRegulator) {
+      const bySku = await this.products.findOne({
+        where: { organizationId: organization.id, sku: scanned },
+      });
+      if (bySku) return bySku;
     }
 
     const gtin = normaliseGtin(scanned);
-    if (!gtin) {
-      return null;
+    if (gtin) {
+      // Compared in memory because the stored value is whatever the operator
+      // typed - 12, 13 or 14 digits - and only the normalised forms are
+      // comparable. For a regulator the whole catalogue is searched; for a
+      // trading org only their own products (small enough for this either way).
+      const candidates = await this.products.find(
+        isRegulator ? {} : { where: { organizationId: organization.id } },
+      );
+      const match = candidates.find((p) => normaliseGtin(p.gtin ?? '') === gtin);
+      if (match) return match;
     }
 
-    // Compared in memory because the stored value is whatever the operator
-    // typed - 12, 13 or 14 digits - and only the normalised forms are
-    // comparable. Catalogues are per-organization and small enough for this.
-    const candidates = await this.products.find({
-      where: { organizationId: organization.id },
-    });
-    return (
-      candidates.find((product) => normaliseGtin(product.gtin ?? '') === gtin) ??
-      null
-    );
+    if (isRegulator) {
+      // Regulators may also resolve by SKU platform-wide.
+      const bySku = await this.products.findOne({ where: { sku: scanned } });
+      if (bySku) return bySku;
+    }
+
+    return null;
   }
 
   private async findBatch(
     scanned: string,
     organization: Organization,
+    isRegulator: boolean,
   ): Promise<Batch | null> {
     const batch = await this.batches.findOne({
       where: { batchCode: scanned },
@@ -264,8 +286,10 @@ export class ScanService {
       return null;
     }
 
-    // A batch is visible to the business that made it. Everyone else reaches
-    // it through an item they hold, which carries its own visibility check.
+    // Regulators see any batch — their oversight mandate is platform-wide.
+    // For everyone else, a batch is visible only to the business that made it;
+    // everyone else reaches it through an item they hold.
+    if (isRegulator) return batch;
     return batch.manufacturer?.id === organization.id ? batch : null;
   }
 
