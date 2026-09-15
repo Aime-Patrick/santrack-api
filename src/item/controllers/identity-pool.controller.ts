@@ -83,7 +83,10 @@ export class IdentityPoolController {
     const poolId = parseInt(id, 10);
     const pool = await this.pools.requireOwnedPool(poolId, organization);
     return {
-      ...view(pool),
+      ...view({
+        ...pool,
+        availableCount: await this.pools.availableCount(poolId),
+      }),
       reconciliation: await this.pools.reconcile(poolId),
     };
   }
@@ -185,13 +188,14 @@ export class IdentityPoolController {
  * detail endpoint carries it, inside the reconciliation, where the screen that
  * needs it asks for one pool at a time.
  */
-function view(pool: IdentityPool) {
+function view(pool: IdentityPool & { availableCount?: number }) {
   return {
     id: pool.id,
     productId: pool.product?.id ?? null,
     productName: pool.product?.name ?? null,
     productSku: pool.product?.sku ?? null,
     requestedCount: pool.requestedCount,
+    availableCount: pool.availableCount ?? undefined,
     status: pool.status,
     failureReason: pool.failureReason,
     requestedBy: pool.createdBy?.email ?? null,

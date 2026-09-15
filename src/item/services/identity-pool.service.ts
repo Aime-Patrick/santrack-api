@@ -294,70 +294,82 @@ export class IdentityPoolService {
    * on a bottle belongs to that run from the moment it is applied. If the run
    * is later abandoned the codes are cancelled, not silently returned to the
    * pool: labels that went out to the line cannot be un-printed.
+   *
+   * When the pool has fewer free labels than needed, it is topped up first —
+   * an exhausted pool is grown, not refused with "no unassigned codes left".
    */
   async assign(
     organization: Organization,
     actor: User,
     dto: AssignIdentitiesDto,
   ): Promise<AssignmentResult> {
+    const pool = await this.requirePool(dto.poolId);
+    if (pool.organizationId !== organization.id) {
+      throw new NotVisibleException(`IdentityPool ${dto.poolId}`);
+    }
+
+    const order = await this.dataSource.getRepository(ProductionOrder).findOne({
+      where: { id: dto.productionOrderId },
+      relations: { batch: true, product: true, organization: true },
+    });
+    if (!order) {
+      throw new NotFoundEntityException('ProductionOrder', dto.productionOrderId);
+    }
+    if (order.organization.id !== organization.id) {
+      throw new NotVisibleException(`ProductionOrder ${dto.productionOrderId}`);
+    }
+
+    // Codes for one product cannot label another. This is the check that
+    // stops a mispicked pool putting Akagera Water labels on a run of juice.
+    if (order.product.id !== pool.product.id) {
+      throw new TraceabilityRuleException(
+        `Pool ${pool.id} holds codes for ${pool.product.name}, but order ` +
+          `${order.orderNumber} produces ${order.product.name}`,
+      );
+    }
+
+    if (!order.batch) {
+      throw new TraceabilityRuleException(
+        `Order ${order.orderNumber} has no lot, so there is nothing for these ` +
+          'codes to belong to',
+      );
+    }
+
+    const free = await this.availableCount(pool.id);
+    const want =
+      dto.count ??
+      (free > 0 ? free : Math.max(order.plannedQuantity ?? 0, 0));
+
+    if (want < 1) {
+      throw new TraceabilityRuleException(
+        `Say how many codes to claim for ${order.orderNumber}, or set a planned quantity on the run`,
+      );
+    }
+
+    if (free < want) {
+      await this.expandPool(pool, want - free, actor);
+    }
+
     return this.dataSource.transaction(async (manager) => {
-      const pool = await this.requirePool(dto.poolId, manager);
-      if (pool.organizationId !== organization.id) {
-        throw new NotVisibleException(`IdentityPool ${dto.poolId}`);
-      }
-
-      const order = await manager.findOne(ProductionOrder, {
-        where: { id: dto.productionOrderId },
-        relations: { batch: true, product: true, organization: true },
-      });
-      if (!order) {
-        throw new NotFoundEntityException('ProductionOrder', dto.productionOrderId);
-      }
-      if (order.organization.id !== organization.id) {
-        throw new NotVisibleException(`ProductionOrder ${dto.productionOrderId}`);
-      }
-
-      // Codes for one product cannot label another. This is the check that
-      // stops a mispicked pool putting Akagera Water labels on a run of juice.
-      if (order.product.id !== pool.product.id) {
-        throw new TraceabilityRuleException(
-          `Pool ${pool.id} holds codes for ${pool.product.name}, but order ` +
-            `${order.orderNumber} produces ${order.product.name}`,
-        );
-      }
-
-      if (!order.batch) {
-        throw new TraceabilityRuleException(
-          `Order ${order.orderNumber} has no lot, so there is nothing for these ` +
-            'codes to belong to',
-        );
-      }
-
       const available = await manager.find(TraceableItem, {
         where: { pool: { id: pool.id }, status: ItemStatus.GENERATED },
         order: { id: 'ASC' },
-        take: dto.count ?? undefined,
+        take: want,
       });
 
-      if (available.length === 0) {
+      if (available.length < want) {
         throw new TraceabilityRuleException(
-          `Pool ${pool.id} has no unassigned codes left`,
-        );
-      }
-      if (dto.count && available.length < dto.count) {
-        throw new TraceabilityRuleException(
-          `Pool ${pool.id} has ${available.length} unassigned codes, fewer than ` +
-            `the ${dto.count} requested`,
+          `Could not prepare ${want} codes for pool ${pool.id} — try again in a moment`,
         );
       }
 
       const ids = available.map((identity) => identity.id);
       await this.updateIdentities(manager, ids, {
         status: ItemStatus.ASSIGNED,
-        batch: { id: order.batch.id },
+        batch: { id: order.batch!.id },
         // The lot's shelf date, copied so expiry checks need no join - the
         // same thing registration has always done.
-        expiresOn: order.batch.expiresOn ?? null,
+        expiresOn: order.batch!.expiresOn ?? null,
       });
 
       await this.recorder.recordMany(
@@ -380,6 +392,48 @@ export class IdentityPoolService {
         lastCode: available[available.length - 1].code,
       };
     });
+  }
+
+  /** How many GENERATED (still claimable) labels sit in the pool. */
+  async availableCount(poolId: number): Promise<number> {
+    return this.items.count({
+      where: { pool: { id: poolId }, status: ItemStatus.GENERATED },
+    });
+  }
+
+  /**
+   * Mints extra free labels into an existing pool so a run can claim them.
+   * Raises `requestedCount` and fills synchronously — assignment waits on
+   * the codes being real.
+   */
+  private async expandPool(
+    pool: IdentityPool,
+    extra: number,
+    actor: User,
+  ): Promise<void> {
+    if (extra < 1) return;
+
+    const minted = await this.mintedCount(pool.id);
+    const nextRequested = minted + extra;
+    if (nextRequested > MAX_POOL_SIZE) {
+      throw new TraceabilityRuleException(
+        `Adding ${extra} codes would push pool ${pool.id} past the ${MAX_POOL_SIZE} limit`,
+      );
+    }
+
+    pool.requestedCount = Math.max(pool.requestedCount, nextRequested);
+    pool.status = PoolStatus.GENERATING;
+    pool.failureReason = null;
+    pool.completedAt = null;
+    await this.pools.save(pool);
+
+    const filled = await this.fill(pool.id, actor);
+    if (filled.status === PoolStatus.FAILED) {
+      throw new TraceabilityRuleException(
+        filled.failureReason ??
+          `Could not mint the extra codes for pool ${pool.id}`,
+      );
+    }
   }
 
   // -------------------------------------------------------- act 4: confirm
@@ -659,7 +713,7 @@ export class IdentityPoolService {
     page: number,
     size: number,
   ): Promise<{
-    content: IdentityPool[];
+    content: Array<IdentityPool & { availableCount: number }>;
     total: number;
     page: number;
     size: number;
@@ -675,7 +729,32 @@ export class IdentityPoolService {
       skip: page * size,
       take: size,
     });
-    return { content, total, page, size };
+
+    const availableByPool = new Map<number, number>();
+    if (content.length > 0) {
+      const rows: Array<{ poolId: string; count: string }> = await this.items
+        .createQueryBuilder('i')
+        .select('i.pool_id', 'poolId')
+        .addSelect('COUNT(*)', 'count')
+        .where('i.pool_id IN (:...ids)', { ids: content.map((p) => p.id) })
+        .andWhere('i.status = :status', { status: ItemStatus.GENERATED })
+        .groupBy('i.pool_id')
+        .getRawMany();
+      for (const row of rows) {
+        availableByPool.set(Number(row.poolId), Number(row.count));
+      }
+    }
+
+    return {
+      content: content.map((pool) =>
+        Object.assign(pool, {
+          availableCount: availableByPool.get(pool.id) ?? 0,
+        }),
+      ),
+      total,
+      page,
+      size,
+    };
   }
 
   /** Export all serial codes and QR payloads in this pool as CSV. */

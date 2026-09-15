@@ -139,8 +139,11 @@ export class Product {
   @Column({ type: 'varchar', nullable: true })
   model: string | null;
 
-  /** Manufacturer barcode (GTIN/EAN/UPC/ISBN) — globally unique. */
-  @Index({ unique: true })
+  /** Manufacturer barcode (GTIN/EAN/UPC/ISBN) — unique within the organization. */
+  @Index('idx_product_org_gtin', ['organizationId', 'gtin'], {
+    unique: true,
+    where: '"gtin" IS NOT NULL',
+  })
   @Column({ type: 'varchar', nullable: true })
   gtin: string | null;
 

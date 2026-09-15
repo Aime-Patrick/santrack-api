@@ -148,11 +148,11 @@ export class ProductService {
     const gtin = dto.gtin?.trim() || null;
     if (gtin) {
       const existingWithGtin = await this.products.findOne({
-        where: { gtin },
+        where: { organizationId, gtin },
       });
       if (existingWithGtin) {
         throw new DuplicateException(
-          `A product with Barcode / GTIN "${gtin}" already exists in the catalog (${existingWithGtin.name})`,
+          `This manufacturer already has a product with GTIN "${gtin}" (${existingWithGtin.name}). One product, one GTIN.`,
         );
       }
     }
@@ -235,11 +235,11 @@ export class ProductService {
     const gtin = dto.gtin !== undefined ? (dto.gtin?.trim() || null) : product.gtin;
     if (gtin && gtin !== product.gtin) {
       const existingWithGtin = await this.products.findOne({
-        where: { gtin },
+        where: { organizationId, gtin },
       });
       if (existingWithGtin && existingWithGtin.id !== product.id) {
         throw new DuplicateException(
-          `A product with Barcode / GTIN "${gtin}" already exists in the catalog (${existingWithGtin.name})`,
+          `This manufacturer already has a product with GTIN "${gtin}" (${existingWithGtin.name}). One product, one GTIN.`,
         );
       }
     }
