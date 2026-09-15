@@ -1,5 +1,5 @@
-import { EventType } from '../event-type.enum';
-import { TraceabilityEvent } from '../entities/traceability-event.entity';
+import { EventType } from './event-type.enum';
+import { TraceabilityEvent } from './entities/traceability-event.entity';
 
 const LOT_LIFECYCLE_TYPES = new Set<string>([
   EventType.RECALLED,
