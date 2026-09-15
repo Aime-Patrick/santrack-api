@@ -192,7 +192,11 @@ export class OrganizationService {
         to: actor.email,
         companyName: organization.name,
       })
-      .catch(() => undefined);
+      .catch((err: Error) =>
+        this.logger.error(
+          `Registration-submitted email to ${actor.email} failed: ${err.message}`,
+        ),
+      );
 
     return organization;
   }
@@ -366,7 +370,11 @@ export class OrganizationService {
                 companyName: organization.name,
                 loginUrl: `${this.appPublicUrl}/login`,
               })
-              .catch(() => undefined);
+              .catch((err: Error) =>
+                this.logger.error(
+                  `Registration-approved email to ${user.email} failed: ${err.message}`,
+                ),
+              );
           }
         } else if (outcome === 'CHANGES_REQUESTED') {
           await this.notifications.sendToUser(user.id, {
@@ -386,7 +394,11 @@ export class OrganizationService {
                 note: organization.reviewNote ?? 'Please check your registration for details.',
                 loginUrl: `${this.appPublicUrl}/login`,
               })
-              .catch(() => undefined);
+              .catch((err: Error) =>
+                this.logger.error(
+                  `Registration-changes email to ${user.email} failed: ${err.message}`,
+                ),
+              );
           }
         } else {
           await this.notifications.sendToUser(user.id, {
@@ -405,7 +417,11 @@ export class OrganizationService {
                 companyName: organization.name,
                 reason: organization.rejectionReason ?? 'No reason given.',
               })
-              .catch(() => undefined);
+              .catch((err: Error) =>
+                this.logger.error(
+                  `Registration-rejected email to ${user.email} failed: ${err.message}`,
+                ),
+              );
           }
         }
       }),

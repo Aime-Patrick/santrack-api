@@ -18,11 +18,15 @@ export class SmtpProvider implements EmailProvider {
   private templateEngine: EmailTemplateEngine;
 
   constructor(config: SmtpConfig) {
+    // Gmail app passwords are often pasted with spaces; nodemailer needs the
+    // continuous 16-character secret.
+    const pass = config.pass.replace(/\s+/g, '');
     this.transporter = nodemailer.createTransport({
       host: config.host,
       port: config.port,
       secure: config.port === 465,
-      auth: config.user ? { user: config.user, pass: config.pass } : undefined,
+      requireTLS: config.port === 587,
+      auth: config.user ? { user: config.user, pass } : undefined,
     });
     // If using Gmail SMTP, the 'from' must match the authenticated account to avoid rejection/spam flagging
     if (config.host.includes('gmail.com') && config.user) {
