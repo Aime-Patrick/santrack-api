@@ -17,6 +17,7 @@ import { OrganizationType } from '../../organization/organization-type.enum';
 import { EventType } from '../../traceability/event-type.enum';
 import { EventRecorder } from '../../traceability/services/event-recorder.service';
 import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
+import { collapseLotLifecycleEvents } from '../../traceability/collapse-lot-lifecycle-events';
 import { RecallDto, RecallRecoveryDto, RecallRecoveryOutcome } from '../dto/recall.dto';
 import { RegulatoryCaseService } from '../../licensing/services/regulatory-case.service';
 import { RegulatoryCase, RegulatoryCaseEvent, RegulatoryCaseEventType } from '../../licensing/entities/regulatory-case.entity';
@@ -133,12 +134,14 @@ export class RecallService {
       .leftJoinAndSelect('e.sourceOrganization', 'org')
       .leftJoinAndSelect('e.sourceLocation', 'loc')
       .leftJoinAndSelect('e.item', 'item')
+      .leftJoinAndSelect('item.batch', 'itemBatch')
+      .leftJoinAndSelect('e.batch', 'batch')
       .where(
         'e.batch_id = :batchId OR (item.id IS NOT NULL AND item.batch_id = :batchId)',
         { batchId: batch.id },
       )
       .orderBy('e.occurredAt', 'DESC')
-      .take(15)
+      .take(200)
       .getMany();
 
     return {
@@ -190,7 +193,9 @@ export class RecallService {
         qty: h.units,
         identities: h.count,
       })),
-      recentEvents: recentEvents.map((e) => ({
+      recentEvents: collapseLotLifecycleEvents(recentEvents)
+        .slice(0, 15)
+        .map((e) => ({
         id: e.id,
         type: e.type,
         occurredAt: e.occurredAt.toISOString(),
@@ -204,7 +209,7 @@ export class RecallService {
         destinationLocationName: e.destinationLocation?.name ?? null,
         itemCode: e.item?.code ?? null,
         itemQrCode: e.item?.qrCode ?? null,
-        batchCode: e.batch?.batchCode ?? null,
+        batchCode: e.batch?.batchCode ?? e.item?.batch?.batchCode ?? null,
         relatedItemCode: e.relatedItem?.code ?? null,
         deviceId: e.deviceId ?? null,
         consumerRef: e.consumerRef ?? null,
@@ -217,9 +222,10 @@ export class RecallService {
   /**
    * Blocks a batch and every item made from it. Items already sold to
    * consumers keep their SOLD status - the goods are gone, and pretending
-   * otherwise would hide the part of the problem that needs a public notice -
-   * but they still receive a RECALLED event, so a consumer scanning the code
-   * is warned.
+   * otherwise would hide the part of the problem that needs a public notice.
+   * The lot itself is marked recalled, so a consumer scan of any code from
+   * the lot still warns. History is one lot-level RECALLED event (not one row
+   * per unit), because the action applies to the whole batch.
    */
   async recallBatch(
     acting: Organization,
@@ -248,26 +254,27 @@ export class RecallService {
         where: { batch: { id: batch.id } },
       });
 
-      let first = true;
-      for (const item of affected) {
-        if (item.status !== ItemStatus.SOLD && item.status !== ItemStatus.DESTROYED) {
-          item.status = ItemStatus.RECALLED;
-          await manager.save(TraceableItem, item);
-        }
-
-        await this.recorder.record(manager, {
-          item,
-          type: EventType.RECALLED,
-          actor,
-          meta: first ? dto.meta : null,
-          sourceOrganization: item.holder,
-          sourceLocation: item.location,
-          quantity: item.quantity,
-          notes: dto.reason ?? null,
-        });
-
-        first = false;
+      const recallable = affected.filter(
+        (item) =>
+          item.status !== ItemStatus.SOLD && item.status !== ItemStatus.DESTROYED,
+      );
+      for (const item of recallable) {
+        item.status = ItemStatus.RECALLED;
       }
+      if (recallable.length > 0) {
+        await manager.save(TraceableItem, recallable);
+      }
+
+      const units = affected.reduce((sum, item) => sum + item.quantity, 0);
+      await this.recorder.record(manager, {
+        batch,
+        type: EventType.RECALLED,
+        actor,
+        meta: dto.meta,
+        sourceOrganization: acting,
+        quantity: units,
+        notes: dto.reason ?? null,
+      });
 
       if (batch.manufacturer) {
         await this.regulatoryCases.openRecallCase(actor, batch, manager);
@@ -307,17 +314,20 @@ export class RecallService {
 
       for (const item of held) {
         item.status = ItemStatus.ACTIVE;
-        await manager.save(TraceableItem, item);
-
-        await this.recorder.record(manager, {
-          item,
-          type: EventType.RELEASED,
-          actor,
-          sourceOrganization: item.holder,
-          sourceLocation: item.location,
-          notes: reason ?? null,
-        });
       }
+      if (held.length > 0) {
+        await manager.save(TraceableItem, held);
+      }
+
+      const units = held.reduce((sum, item) => sum + item.quantity, 0);
+      await this.recorder.record(manager, {
+        batch,
+        type: EventType.RELEASED,
+        actor,
+        sourceOrganization: acting,
+        quantity: units,
+        notes: reason ?? null,
+      });
     });
 
     return this.impact(batchId);

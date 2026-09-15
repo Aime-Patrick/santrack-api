@@ -4,7 +4,9 @@ import { DataSource } from 'typeorm';
 import { RegulatoryCaseEvent } from '../entities/regulatory-case.entity';
 import { RegulatoryInspection, RegulatoryInspectionResult } from '../entities/regulatory-inspection.entity';
 import { LicenseEvent } from '../entities/license.entity';
+import { EventType } from '../../traceability/event-type.enum';
 import { TraceabilityEvent } from '../../traceability/entities/traceability-event.entity';
+import { collapseLotLifecycleEvents } from '../../traceability/collapse-lot-lifecycle-events';
 
 export interface AccountabilityEntry {
   id: number;
@@ -99,12 +101,15 @@ export class RegulatoryAccountabilityService {
       .createQueryBuilder('te')
       .leftJoinAndSelect('te.actor', 'actor')
       .leftJoinAndSelect('te.sourceOrganization', 'org')
+      .leftJoinAndSelect('te.batch', 'batch')
+      .leftJoinAndSelect('te.item', 'item')
+      .leftJoinAndSelect('item.batch', 'itemBatch')
       .where('te.source_organization_id = :orgId', { orgId: organizationId })
       .orderBy('te.occurredAt', 'DESC')
-      .take(limit)
+      .take(Math.max(limit * 20, 500))
       .getMany();
 
-    for (const evt of traceEvents) {
+    for (const evt of collapseLotLifecycleEvents(traceEvents)) {
       entries.push({
         id: evt.id,
         source: 'TRACEABILITY',
@@ -298,13 +303,15 @@ export class RegulatoryAccountabilityService {
       .createQueryBuilder('te')
       .leftJoinAndSelect('te.actor', 'actor')
       .leftJoinAndSelect('te.sourceOrganization', 'org')
-      .leftJoin('te.item', 'item')
+      .leftJoinAndSelect('te.batch', 'batch')
+      .leftJoinAndSelect('te.item', 'item')
+      .leftJoinAndSelect('item.batch', 'itemBatch')
       .where('te.batch_id IN (:...batchIds) OR (item.id IS NOT NULL AND item.batch_id IN (:...batchIds))', { batchIds })
       .orderBy('te.occurredAt', 'DESC')
-      .take(limit)
+      .take(Math.max(limit * 20, 500))
       .getMany();
 
-    for (const evt of traceEvents) {
+    for (const evt of collapseLotLifecycleEvents(traceEvents)) {
       entries.push({
         id: evt.id,
         source: 'TRACEABILITY',
@@ -374,13 +381,15 @@ export class RegulatoryAccountabilityService {
       .createQueryBuilder('te')
       .leftJoinAndSelect('te.actor', 'actor')
       .leftJoinAndSelect('te.sourceOrganization', 'org')
-      .leftJoin('te.item', 'item')
+      .leftJoinAndSelect('te.batch', 'batch')
+      .leftJoinAndSelect('te.item', 'item')
+      .leftJoinAndSelect('item.batch', 'itemBatch')
       .where('te.batch_id = :batchId OR (item.id IS NOT NULL AND item.batch_id = :batchId)', { batchId })
       .orderBy('te.occurredAt', 'DESC')
-      .take(limit)
+      .take(Math.max(limit * 20, 500))
       .getMany();
 
-    for (const evt of traceEvents) {
+    for (const evt of collapseLotLifecycleEvents(traceEvents)) {
       entries.push({
         id: evt.id,
         source: 'TRACEABILITY',
@@ -571,7 +580,21 @@ function buildLicenseSummary(evt: LicenseEvent): string {
 }
 
 function buildTraceSummary(evt: TraceabilityEvent): string {
-  const parts: string[] = [evt.type.replace(/_/g, ' ')];
+  const lot =
+    evt.batch?.batchCode ?? evt.item?.batch?.batchCode ?? null;
+  if (
+    String(evt.type) === EventType.RECALLED ||
+    String(evt.type) === EventType.RELEASED
+  ) {
+    const action =
+      String(evt.type) === EventType.RECALLED ? 'Lot recalled' : 'Recall lifted';
+    const parts: string[] = [action];
+    if (lot) parts.push(lot);
+    if (evt.quantity) parts.push(`${evt.quantity} units`);
+    if (evt.notes) parts.push(evt.notes);
+    return parts.join(' — ');
+  }
+  const parts: string[] = [String(evt.type).replace(/_/g, ' ')];
   if (evt.quantity) parts.push(`${evt.quantity} units`);
   if (evt.notes) parts.push(evt.notes);
   return parts.join(' — ');
