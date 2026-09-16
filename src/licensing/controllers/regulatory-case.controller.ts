@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Post, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Capability } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
 import { UserRole } from '../../auth/user-role.enum';

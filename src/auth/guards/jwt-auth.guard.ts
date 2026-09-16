@@ -8,7 +8,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Request } from 'express';
+import type { Request } from 'express';
 import { Repository } from 'typeorm';
 import { CAPABILITY_ANY_KEY, CAPABILITY_KEY, PUBLIC_KEY } from '../../common/decorators';
 import { Capability, userCan } from '../capabilities';

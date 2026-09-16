@@ -1,6 +1,6 @@
 import { Controller, Get, Query, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Capability } from '../auth/capabilities';
 import { RequireCapability } from '../common/decorators';
 import { BarcodeService, LabelFormat } from './barcode.service';

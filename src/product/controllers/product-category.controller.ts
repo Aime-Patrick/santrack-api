@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Repository } from 'typeorm';
 import { Capability } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';

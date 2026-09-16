@@ -1,6 +1,6 @@
 import { Controller, Get, Param, Res } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Capability } from '../auth/capabilities';
 import { ActingOrg, RequireCapability } from '../common/decorators';
 import { Organization } from '../organization/entities/organization.entity';

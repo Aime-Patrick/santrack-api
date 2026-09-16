@@ -12,7 +12,7 @@ import {
   Res,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import type { Response } from 'express';
 import { Capability } from '../../auth/capabilities';
 import { BarcodeService } from '../../barcode/barcode.service';
 import { Symbology, SymbologyUse, specFor } from '../../barcode/symbology';
