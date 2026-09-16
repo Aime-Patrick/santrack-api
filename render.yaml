@@ -27,10 +27,10 @@ services:
     runtime: node
     plan: free
     region: oregon
-    # Plain tsc uses far less RAM than nest build + Swagger plugin on free tier.
-    # Override NODE_OPTIONS for the build only — the service env 400MB heap is for
-    # runtime; tsc now needs ~512MB after the licensing/eligibility growth.
-    buildCommand: pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=512 pnpm run build:render
+    # Free-tier RAM ~512MB: full-project tsc OOMs. build:render transpileModule
+    # one file at a time (~low heap). Dashboard Build Command must match this —
+    # Blueprint sync is not automatic for manually created services.
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build:render
     # Never use nest start here — it recompiles TS and OOMs on free tier.
     startCommand: pnpm run start:render
     healthCheckPath: /api/health
