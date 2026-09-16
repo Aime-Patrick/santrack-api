@@ -52,6 +52,16 @@ export class User {
   })
   passwordResetExpiresAt: Date | null;
 
+  /** Whether TOTP MFA is active for this account. */
+  @Column({ name: 'mfa_enabled', type: 'boolean', default: false })
+  mfaEnabled: boolean;
+
+  /**
+   * Encrypted TOTP secret. Never selected unless MFA setup/verify asks for it.
+   */
+  @Column({ name: 'mfa_secret', type: 'varchar', nullable: true, select: false })
+  mfaSecret: string | null;
+
   /**
    * Capabilities the platform operator granted to this individual user, on
    * top of what their role and organization confer. Written only through

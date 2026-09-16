@@ -4,9 +4,12 @@ import { NextFunction, Request, Response } from 'express';
 /**
  * Security headers on every response (technical proposal section 15: security
  * hardening). A dependency-free stand-in for a helmet middleware - each header
- * that has a sensible hardening value is set explicitly, and the ones that
- * need application-specific values (a CSP nonce for inline scripts) are left
- * off rather than guessed.
+ * that has a sensible hardening value is set explicitly.
+ *
+ * CSP is intentionally strict for the JSON API. When Swagger UI is enabled
+ * (`ENABLE_SWAGGER=true` or non-production), a looser policy allows the docs
+ * assets; otherwise `default-src 'none'` keeps browsers from executing
+ * unexpected content if an endpoint ever returned HTML by mistake.
  */
 @Injectable()
 export class SecurityHeadersMiddleware implements NestMiddleware {
@@ -23,6 +26,17 @@ export class SecurityHeadersMiddleware implements NestMiddleware {
       'Strict-Transport-Security',
       'max-age=31536000; includeSubDomains',
     );
+
+    const swaggerOn =
+      process.env.ENABLE_SWAGGER === 'true' ||
+      process.env.NODE_ENV !== 'production';
+    response.setHeader(
+      'Content-Security-Policy',
+      swaggerOn
+        ? "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'"
+        : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    );
+
     next();
   }
 }

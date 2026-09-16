@@ -105,10 +105,8 @@ export class ProductionService {
    * in two years why this run was permitted reads that record rather than
    * watching today's rules re-run against today's licences.
    *
-   * Refusal happens only when the verdict is `blocking`. Under the platform's
-   * default mode the order is created and a finding is written instead, which is
-   * the supervision the proposal describes rather than the gatekeeping it
-   * doesn't.
+   * Refusal happens when the verdict is `blocking`. With strict enforcement as
+   * the deployment default, non-compliant production is refused at creation.
    */
   async create(
     organization: Organization,
@@ -340,9 +338,8 @@ export class ProductionService {
     orderId: number,
     dto?: StartProductionDto,
   ): Promise<ProductionOrder> {
-    // Advisory by default: a finding is recorded and the holder notified, and
-    // the run still starts. See LicenseEnforcementService for why the proposal
-    // calls for supervision rather than a gate here.
+    // Enforcement policy applies here too. In strict mode this throws on
+    // non-compliance; in advisory mode it records findings and continues.
     await this.licensing.checkOwnTrade(organization, 'start production', actor);
 
     return this.dataSource.transaction(async (manager) => {

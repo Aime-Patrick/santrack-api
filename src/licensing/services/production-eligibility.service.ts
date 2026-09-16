@@ -136,12 +136,11 @@ export class ProductionEligibilityService {
         if (licence?.provisional) {
           return {
             code,
-            status: 'WARN',
+            status: 'FAIL',
             message:
-              `Trading on provisional licence ${licence.licenseNumber}, which was ` +
-              'issued automatically at registration rather than by a regulator' +
-              (licence.expiresOn ? ` and expires ${licence.expiresOn}` : '') +
-              '. Apply for a full manufacturing licence before it lapses.',
+              `Manufacturing cannot proceed on provisional licence ${licence.licenseNumber}` +
+              (licence.expiresOn ? ` (expires ${licence.expiresOn})` : '') +
+              '. A full regulator-issued manufacturing licence is required.',
             remedy: { label: 'Apply for a full licence', href: '/licenses' },
           };
         }
@@ -534,17 +533,17 @@ export class ProductionEligibilityService {
       };
     }
 
-    // Suspended registration — production is paused, not permanently forbidden.
+    // Suspended registration — production is paused until reinstated.
     const suspended = registrations.find(
       (r) => r.status === ProductRegistrationStatus.SUSPENDED,
     );
     if (suspended) {
       return {
         code,
-        status: 'WARN',
+        status: 'FAIL',
         message:
           `Product registration ${suspended.registrationNumber} is currently ` +
-          'suspended. Contact the issuing authority before proceeding.',
+          'suspended. Reinstate it before producing this product.',
         remedy: applyLink,
       };
     }

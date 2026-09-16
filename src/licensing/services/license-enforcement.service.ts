@@ -33,10 +33,9 @@ export type { Assessment } from '../governing-licence';
  * never asks for an unlicensed business to be blocked - it asks for the
  * regulator to be able to see that it is unlicensed and act.
  *
- * So the default is ADVISORY: the operation proceeds, a ComplianceFinding is
- * recorded against the organization, and the holder is told. A regulator sees
- * the finding and can suspend or revoke, which is the lever the document
- * actually describes.
+ * So the default is STRICT: non-compliant operations are refused and a
+ * ComplianceFinding is still recorded. ADVISORY remains available for sandbox
+ * and demo environments where the regulator wants visibility without blocking.
  *
  * Two things are never advisory:
  *

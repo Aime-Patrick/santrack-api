@@ -1,11 +1,12 @@
 import { IsEmail, IsString, MinLength } from 'class-validator';
+import { IsSantrackPassword } from '../password-policy';
 
 export class RegisterDto {
   @IsEmail({}, { message: 'A valid email address is required' })
   email: string;
 
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @IsSantrackPassword()
   password: string;
 
   @IsString()
@@ -32,6 +33,6 @@ export class ResetPasswordDto {
   token: string;
 
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @IsSantrackPassword()
   newPassword: string;
 }

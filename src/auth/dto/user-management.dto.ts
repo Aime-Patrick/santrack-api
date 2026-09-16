@@ -10,6 +10,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Capability } from '../capabilities';
+import { IsSantrackPassword } from '../password-policy';
 import { UserRole } from '../user-role.enum';
 
 export class CreateUserDto {
@@ -22,7 +23,7 @@ export class CreateUserDto {
    */
   @ValidateIf((dto: CreateUserDto) => !dto.generatePassword)
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @IsSantrackPassword()
   password?: string;
 
   @IsOptional()
@@ -57,7 +58,7 @@ export class UpdateUserDto {
 
 export class ResetPasswordDto {
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @IsSantrackPassword()
   password: string;
 }
 
@@ -66,7 +67,7 @@ export class ChangePasswordDto {
   currentPassword: string;
 
   @IsString()
-  @MinLength(8, { message: 'Password must be at least 8 characters' })
+  @IsSantrackPassword()
   newPassword: string;
 }
 

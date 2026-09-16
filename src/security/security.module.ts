@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuditController } from './audit.controller';
 import { AuditService } from './audit.service';
 import { AuditLog } from './entities/audit-log.entity';
+import { SecurityEventsService } from './security-events.service';
 import { SecurityHeadersMiddleware } from './security-headers.middleware';
 
 /**
@@ -14,8 +15,8 @@ import { SecurityHeadersMiddleware } from './security-headers.middleware';
 @Module({
   imports: [TypeOrmModule.forFeature([AuditLog])],
   controllers: [AuditController],
-  providers: [AuditService],
-  exports: [AuditService],
+  providers: [AuditService, SecurityEventsService],
+  exports: [AuditService, SecurityEventsService],
 })
 export class SecurityModule {
   configure(consumer: MiddlewareConsumer): void {

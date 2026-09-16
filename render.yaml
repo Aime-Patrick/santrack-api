@@ -38,7 +38,9 @@ services:
       - key: NODE_OPTIONS
         value: --max-old-space-size=400
       - key: SEED_ON_START
-        value: "true"
+        value: "false"
+      - key: ALLOW_DEMO_SEED
+        value: "false"
       - key: TRUST_PROXY_HOPS
         value: "1"
       - key: DATABASE_URL
@@ -53,16 +55,18 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
-        value: 24h
+        value: 8h
       - key: CORS_ORIGINS
         sync: false
       - key: APP_PUBLIC_URL
         sync: false
       - key: LICENSING_ENFORCEMENT
-        value: advisory
+        value: strict
       - key: STORAGE_DRIVER
         value: local
       - key: EMAIL_PROVIDER
         value: smtp
       - key: EMAIL_FROM
         value: noreply@santrack.rw
+      - key: SECURITY_ALERT_WEBHOOK_URL
+        sync: false

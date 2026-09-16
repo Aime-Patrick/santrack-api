@@ -7,6 +7,7 @@ import { OrganizationType } from '../../organization/organization-type.enum';
 import { User } from '../../auth/entities/user.entity';
 import { UserRole } from '../../auth/user-role.enum';
 import { UserManagementService } from '../../auth/services/user-management.service';
+import { isPasswordAllowed } from '../../auth/password-policy';
 import { OrganizationService } from '../../organization/services/organization.service';
 import { ConfigureOwnAuthorityDto, CreateRegulatoryAuthorityDto, OnboardRegulatoryAuthorityDto, UpdateRegulatoryAuthorityDto } from '../dto/regulatory-authority.dto';
 import { RegulatoryAuthority } from '../entities/regulatory-authority.entity';
@@ -123,8 +124,10 @@ export class RegulatoryAuthorityService {
           throw new TraceabilityRuleException(`User with email ${email} already belongs to another organization (${existingUser.organization?.name ?? 'Unknown'})`);
         }
       } else {
-        if (!dto.adminPassword || dto.adminPassword.length < 8) {
-          throw new TraceabilityRuleException('Password must be at least 8 characters for a new administrator account');
+        if (!dto.adminPassword || !isPasswordAllowed(dto.adminPassword)) {
+          throw new TraceabilityRuleException(
+            'Password must be at least 12 characters and include a letter and a number for a new administrator account',
+          );
         }
         adminUserRecord = await this.userManagement.create(actor, {
           email,

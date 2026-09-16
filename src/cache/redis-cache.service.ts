@@ -87,4 +87,34 @@ export class RedisCacheService implements OnModuleInit, OnModuleDestroy {
       // Cache write failures must not affect the response.
     }
   }
+
+  /**
+   * Atomic fixed-window counter for rate limits. Returns the new count, or
+   * `null` when Redis is down so callers can fall back to in-process state.
+   */
+  async incrFixedWindow(key: string, windowMs: number): Promise<number | null> {
+    if (!this.ready || !this.client) return null;
+    try {
+      const result = await this.client.eval(
+        `
+        local current = redis.call('INCR', KEYS[1])
+        if current == 1 then
+          redis.call('PEXPIRE', KEYS[1], ARGV[1])
+        end
+        return current
+        `,
+        1,
+        key,
+        String(windowMs),
+      );
+      return typeof result === 'number' ? result : Number(result);
+    } catch {
+      return null;
+    }
+  }
+
+  /** True when Redis answered a ping / is ready for writes. */
+  isReady(): boolean {
+    return this.ready;
+  }
 }

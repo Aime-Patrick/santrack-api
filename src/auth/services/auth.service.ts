@@ -3,6 +3,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
+import { generateSecret, generateURI, verify } from 'otplib';
+import * as QRCode from 'qrcode';
 import { Repository } from 'typeorm';
 import { compare, hash } from 'bcryptjs';
 
@@ -12,6 +14,7 @@ import {
   TraceabilityRuleException,
 } from '../../common/errors';
 import { Organization } from '../../organization/entities/organization.entity';
+import { OrganizationType } from '../../organization/organization-type.enum';
 import { ChangePasswordDto } from '../dto/user-management.dto';
 import {
   LoginDto,
@@ -26,8 +29,15 @@ import {
   Capability,
   capabilitiesFor,
 } from '../capabilities';
+import { BCRYPT_ROUNDS } from '../password-policy';
+import {
+  decryptSecret,
+  encryptSecret,
+  MFA_TOKEN_PURPOSE,
+} from '../session-cookie';
 import { User } from '../entities/user.entity';
 import { UserRole } from '../user-role.enum';
+import { SecurityEventsService } from '../../security/security-events.service';
 
 export interface AuthResult {
   token: string;
@@ -43,25 +53,29 @@ export interface AuthResult {
       onboardingStatus: string;
     } | null;
     mustChangePassword: boolean;
+    mfaEnabled: boolean;
+    /** True for SYSTEM_ADMIN / regulator staff until they enroll TOTP. */
+    mustEnableMfa: boolean;
     /**
      * Everything this person may do, already resolved from their role and
      * their organization's standing.
-     *
-     * The browser used to keep its own copy of the capability table, which
-     * drifted: a production manager was shown the industry registry because
-     * the copy was a year out of date. Sending the answer rather than the
-     * inputs means the navigation cannot disagree with the guard.
      */
     capabilities: Capability[];
   };
 }
+
+export interface MfaChallengeResult {
+  mfaRequired: true;
+  mfaToken: string;
+}
+
+export type LoginResult = AuthResult | MfaChallengeResult;
 
 /** The role/capability reference table, as the Roles screen consumes it. */
 export interface CapabilityCatalogue {
   capabilities: {
     capability: Capability;
     description: string;
-    /** True when standing, not job title, is what grants it. */
     conferredByStanding: boolean;
   }[];
   roles: { role: UserRole; capabilities: Capability[] }[];
@@ -72,26 +86,24 @@ export interface CapabilityCatalogue {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly appPublicUrl: string;
+  private readonly jwtSecret: string;
 
   constructor(
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly jwt: JwtService,
     private readonly email: EmailService,
-    config: ConfigService,
+    private readonly config: ConfigService,
+    private readonly securityEvents: SecurityEventsService,
   ) {
     this.appPublicUrl = (
       config.get<string>('appPublicUrl') ??
       (config.get<string[]>('corsOrigins') ?? ['http://localhost:3000'])[0] ??
       'http://localhost:3000'
     ).replace(/\/$/, '');
+    this.jwtSecret = config.get<string>('jwt.secret') ?? '';
   }
 
-  /**
-   * Creates an account. The first user of an organization becomes its admin
-   * during onboarding; until they complete organization setup they hold no
-   * position in any chain of custody.
-   */
   async register(dto: RegisterDto): Promise<AuthResult> {
     const email = dto.email.trim().toLowerCase();
 
@@ -102,22 +114,21 @@ export class AuthService {
     const user = await this.users.save(
       this.users.create({
         email,
-        passwordHash: await hash(dto.password, 10),
+        passwordHash: await hash(dto.password, BCRYPT_ROUNDS),
         fullName: dto.fullName.trim(),
         role: UserRole.ORG_ADMIN,
         organization: null,
         mustChangePassword: false,
+        mfaEnabled: false,
       }),
     );
 
     return this.issue(user);
   }
 
-  async login(dto: LoginDto): Promise<AuthResult> {
+  async login(dto: LoginDto, clientIp?: string): Promise<LoginResult> {
     const email = dto.email.trim().toLowerCase();
 
-    // The hash is not selected by default, so it is asked for explicitly here
-    // and nowhere else.
     const user = await this.users.findOne({
       where: { email },
       select: {
@@ -127,23 +138,202 @@ export class AuthService {
         role: true,
         passwordHash: true,
         mustChangePassword: true,
+        mfaEnabled: true,
       },
       relations: { organization: true },
     });
 
-    // The same error whether the account is unknown or the password is wrong,
-    // so the response cannot be used to discover which emails are registered.
     if (!user || !(await compare(dto.password, user.passwordHash))) {
+      this.securityEvents.emit({
+        event: 'auth.login_failed',
+        email,
+        ip: clientIp ?? null,
+      });
       throw new InvalidCredentialsException();
     }
 
+    if (user.mfaEnabled) {
+      this.securityEvents.emit({
+        event: 'auth.mfa_challenge',
+        userId: user.id,
+        ip: clientIp ?? null,
+      });
+      const mfaToken = await this.jwt.signAsync(
+        { sub: user.id, purpose: MFA_TOKEN_PURPOSE },
+        { expiresIn: '5m' },
+      );
+      return { mfaRequired: true, mfaToken };
+    }
+
+    this.securityEvents.emit({
+      event: 'auth.login_succeeded',
+      userId: user.id,
+      ip: clientIp ?? null,
+    });
     return this.issue(user);
   }
 
-  /**
-   * Replaces the caller's password. Required after an invite or admin reset
-   * (`mustChangePassword`), and available anytime from account settings.
-   */
+  async verifyMfaLogin(
+    mfaToken: string,
+    code: string,
+    clientIp?: string,
+  ): Promise<AuthResult> {
+    let userId: number;
+    try {
+      const payload = await this.jwt.verifyAsync<{
+        sub: number;
+        purpose?: string;
+      }>(mfaToken);
+      if (payload.purpose !== MFA_TOKEN_PURPOSE) {
+        throw new Error('wrong purpose');
+      }
+      userId = payload.sub;
+    } catch {
+      throw new TraceabilityRuleException(
+        'MFA session expired. Sign in again.',
+      );
+    }
+
+    const user = await this.users.findOne({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        mustChangePassword: true,
+        mfaEnabled: true,
+        mfaSecret: true,
+      },
+      relations: { organization: true },
+    });
+
+    if (!user?.mfaEnabled || !user.mfaSecret) {
+      throw new TraceabilityRuleException('MFA is not enabled for this account');
+    }
+
+    const secret = decryptSecret(user.mfaSecret, this.jwtSecret);
+    const result = await verify({ secret, token: code.trim() });
+    if (!result.valid) {
+      this.securityEvents.emit({
+        event: 'auth.mfa_failed',
+        userId: user.id,
+        ip: clientIp ?? null,
+      });
+      throw new TraceabilityRuleException('Invalid authenticator code');
+    }
+
+    this.securityEvents.emit({
+      event: 'auth.login_succeeded',
+      userId: user.id,
+      mfa: true,
+      ip: clientIp ?? null,
+    });
+    return this.issue(user);
+  }
+
+  async beginMfaSetup(actor: User): Promise<{
+    secret: string;
+    otpauthUrl: string;
+    qrDataUrl: string;
+  }> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: { id: true, email: true, mfaEnabled: true, mfaSecret: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+    if (user.mfaEnabled) {
+      throw new TraceabilityRuleException('MFA is already enabled');
+    }
+
+    const secret = generateSecret();
+    user.mfaSecret = encryptSecret(secret, this.jwtSecret);
+    user.mfaEnabled = false;
+    await this.users.save(user);
+
+    const otpauthUrl = generateURI({
+      strategy: 'totp',
+      issuer: 'SanTrack',
+      label: user.email,
+      secret,
+    });
+    const qrDataUrl = await QRCode.toDataURL(otpauthUrl, {
+      margin: 1,
+      width: 220,
+    });
+    return { secret, otpauthUrl, qrDataUrl };
+  }
+
+  async confirmMfaSetup(actor: User, code: string): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        mustChangePassword: true,
+        mfaEnabled: true,
+        mfaSecret: true,
+      },
+      relations: { organization: true },
+    });
+    if (!user?.mfaSecret) {
+      throw new TraceabilityRuleException('Start MFA setup before confirming');
+    }
+
+    const secret = decryptSecret(user.mfaSecret, this.jwtSecret);
+    const result = await verify({ secret, token: code.trim() });
+    if (!result.valid) {
+      throw new TraceabilityRuleException('Invalid authenticator code');
+    }
+
+    user.mfaEnabled = true;
+    await this.users.save(user);
+    this.securityEvents.emit({ event: 'auth.mfa_enabled', userId: user.id });
+    return this.describe(user);
+  }
+
+  async disableMfa(
+    actor: User,
+    password: string,
+    code: string,
+  ): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: true,
+        passwordHash: true,
+        mustChangePassword: true,
+        mfaEnabled: true,
+        mfaSecret: true,
+      },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+    if (!(await compare(password, user.passwordHash))) {
+      throw new TraceabilityRuleException('Current password is incorrect');
+    }
+    if (!user.mfaEnabled || !user.mfaSecret) {
+      throw new TraceabilityRuleException('MFA is not enabled');
+    }
+
+    const secret = decryptSecret(user.mfaSecret, this.jwtSecret);
+    const result = await verify({ secret, token: code.trim() });
+    if (!result.valid) {
+      throw new TraceabilityRuleException('Invalid authenticator code');
+    }
+
+    user.mfaEnabled = false;
+    user.mfaSecret = null;
+    await this.users.save(user);
+    this.securityEvents.emit({ event: 'auth.mfa_disabled', userId: user.id });
+    return this.describe(user);
+  }
+
   async changePassword(actor: User, dto: ChangePasswordDto): Promise<AuthResult> {
     const user = await this.users.findOne({
       where: { id: actor.id },
@@ -154,6 +344,7 @@ export class AuthService {
         role: true,
         passwordHash: true,
         mustChangePassword: true,
+        mfaEnabled: true,
       },
       relations: { organization: true },
     });
@@ -171,7 +362,7 @@ export class AuthService {
       );
     }
 
-    user.passwordHash = await hash(dto.newPassword, 10);
+    user.passwordHash = await hash(dto.newPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = false;
     await this.users.save(user);
 
@@ -182,10 +373,6 @@ export class AuthService {
     return this.describe(user);
   }
 
-  /**
-   * Self-service profile update — lets a user change their own display name.
-   * Returns a fresh /me payload so the client can update its cache in one step.
-   */
   async updateProfile(
     actor: User,
     dto: { fullName?: string },
@@ -203,15 +390,6 @@ export class AuthService {
     return this.describe(user);
   }
 
-  /**
-   * Starts a self-service password reset.
-   *
-   * Always answers success - whether or not the email is registered - so the
-   * endpoint cannot be used to discover which addresses have accounts. When
-   * the account exists, a single-use token (1h expiry, stored as its SHA-256)
-   * is created and emailed; a delivery failure is logged, never surfaced,
-   * because the caller must not learn anything from it either.
-   */
   async requestPasswordReset(dto: RequestPasswordResetDto): Promise<{ success: true }> {
     const email = dto.email.trim().toLowerCase();
     const user = await this.users.findOne({ where: { email } });
@@ -234,10 +412,6 @@ export class AuthService {
     return { success: true };
   }
 
-  /**
-   * Consumes the emailed token and sets a new password. One use only: the
-   * token is nulled on success, so a replay of the same link fails.
-   */
   async resetPassword(dto: ResetPasswordDto): Promise<{ success: true }> {
     const user = await this.users.findOne({
       where: { passwordResetToken: this.hashResetToken(dto.token) },
@@ -260,7 +434,7 @@ export class AuthService {
       );
     }
 
-    user.passwordHash = await hash(dto.newPassword, 10);
+    user.passwordHash = await hash(dto.newPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = false;
     user.passwordResetToken = null;
     user.passwordResetExpiresAt = null;
@@ -273,14 +447,6 @@ export class AuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  /**
-   * The reference table behind the Roles screen: every capability the platform
-   * defines, what each one means, and which roles hold it.
-   *
-   * Served rather than duplicated in the browser for the same reason `me`
-   * carries a resolved list - there is one table, and it lives in
-   * capabilities.ts.
-   */
   catalogue(): CapabilityCatalogue {
     return {
       capabilities: Object.values(Capability).map((capability) => ({
@@ -308,7 +474,15 @@ export class AuthService {
     return { token, user: this.describe(user) };
   }
 
+  private mfaPolicyApplies(user: User): boolean {
+    return (
+      user.role === UserRole.SYSTEM_ADMIN ||
+      user.organization?.type === OrganizationType.REGULATOR
+    );
+  }
+
   private describe(user: User): AuthResult['user'] {
+    const mfaEnabled = !!user.mfaEnabled;
     return {
       id: user.id,
       email: user.email,
@@ -323,6 +497,8 @@ export class AuthService {
           }
         : null,
       mustChangePassword: !!user.mustChangePassword,
+      mfaEnabled,
+      mustEnableMfa: this.mfaPolicyApplies(user) && !mfaEnabled,
       capabilities: capabilitiesFor(
         user.role,
         user.organization?.type,

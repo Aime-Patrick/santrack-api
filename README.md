@@ -34,9 +34,9 @@ Redis/BullMQ, Socket.IO and scheduled jobs need a long-running Node process.
    - `APP_PUBLIC_URL` — same origin (used in invite / reset email links)
 4. Deploy. **Start command** runs migrations, then the API. On the free plan there is
    no pre-deploy hook — do not put `migration:run` there.
-5. **Demo seed:** set `SEED_ON_START=true` on the web service (included in
-   `render.yaml`). Seed is idempotent and creates demo logins on each deploy.
-   Turn it off (`false`) once you go live with real data.
+5. **Demo seed (off by default):** keep `SEED_ON_START=false` for real data.
+   Disposable demos only: set both `SEED_ON_START=true` and `ALLOW_DEMO_SEED=true`.
+   Production refuses to seed without `ALLOW_DEMO_SEED`. See `docs/SECURITY-OPS.md`.
 6. Health check: `GET /api/health` → `{ "status": "ok" }`.
 7. Point the frontend API base URL at your Render service URL
    (e.g. `https://santrack-api.onrender.com`).
@@ -224,17 +224,11 @@ editing dates, so the record of who was authorised during which window
 survives. `LicenseEvent` is append-only for the same reason `TraceabilityEvent`
 is: if a regulator has to defend a suspension, that is the record that does it.
 
-**Enforcement is advisory by default.** Searched end to end, the proposal never
-asks for an unlicensed business to be blocked: §1 specifies "compliance status"
-and "automated license expiry notifications", and §10 puts "license status" and
-"expired licenses" on the regulator's dashboard. That is supervision, not
-gatekeeping.
-
-So a non-compliant operation goes through, records a `ComplianceFinding`
-against the organization, and notifies the holder. The regulator reads the
-findings at `GET /api/regulator/licenses/findings` and can suspend or revoke —
-which is the lever the document actually describes. `LICENSING_ENFORCEMENT`
-switches this to `strict` (refuse instead) or `off`.
+**Enforcement is strict by default.** Real-world regulated operations are
+gatekept: manufacturing without valid authorization is refused. In strict mode
+non-compliant operations are blocked; findings are still recorded for regulator
+oversight. `LICENSING_ENFORCEMENT` can be set to `advisory` for sandbox/demo
+workflows or `off` for controlled local testing.
 
 Two things are never advisory. **Revoked licences are refused in every mode** —
 revocation is terminal and stopping the business is the point. And safety
@@ -322,9 +316,9 @@ it directly with `POST /api/maintenance/expiry-sweep`.
   timeline reads PRODUCTION_STARTED → MATERIAL_ISSUED → PRODUCTION_COMPLETED →
   QC_INSPECTED → BATCH_APPROVED → MANUFACTURED, batch-level entries marked
   `viaBatch`.
-- **Licence enforcement is advisory**, as the Licensing section above
-  describes, and new organizations receive a provisional licence at
-  registration — so self-serve onboarding works.
+- **Licence enforcement defaults to strict**, and new organizations receive a
+  provisional licence at registration as a bootstrap record. Production now
+  requires full regulator-issued licensing and product authorization.
 
 ### Still open against the technical proposal
 
@@ -336,18 +330,25 @@ it directly with `POST /api/maintenance/expiry-sweep`.
   `reorderLevel` has nothing to compare against.
 - Absent modules: warranty and after-sales, export and customs, assets,
   stock adjustment and cycle counting, product variants, stock valuation.
-- MFA, encryption at rest, backups (§15). Rate limiting now covers the
-  unauthenticated routes; see below.
+- MFA, encryption at rest, backups (§15) — ops checklist in `docs/SECURITY-OPS.md`.
+  Rate limiting covers unauthenticated routes; login default is 10 / 15 min.
+  Passwords require ≥12 chars with a letter and a number; JWT default is 8h.
 - Barcode formats — Code128 / EAN / UPC (§14). QR only today.
 
 ### Rate limiting
 
-`FixedWindowLimiter` is applied through `RateLimitGuard`, registered globally
-and inert unless a route declares `@RateLimit`. It covers login, registration
-and public verification — the routes that answer without a token.
+`RateLimitGuard` is registered globally and inert unless a route declares
+`@RateLimit`. It covers login, registration, password reset and public
+verification — the routes that answer without a token.
 
-State is per-process. Behind more than one replica each enforces its own share
-and the effective limit multiplies by the replica count, so this moves to Redis
-before horizontal scaling. The guard reads `request.ip`, which Express only
-derives from `X-Forwarded-For` when `TRUST_PROXY_HOPS` matches the number of
-proxies actually in front of the service.
+Counters live in **Redis** (`rl:{policy}:{ip}`) when Redis is available, so
+limits are shared across replicas. If Redis is down the guard falls back to
+in-process windows and logs a warning. The guard reads `request.ip`, which
+Express only derives from `X-Forwarded-For` when `TRUST_PROXY_HOPS` matches
+the number of proxies in front of the service.
+
+### Security alerts
+
+Set `SECURITY_ALERT_WEBHOOK_URL` to a Slack/Teams incoming webhook to receive
+high-signal events (`auth.login_failed`, `auth.mfa_failed` by default).
+Override the event list with `SECURITY_ALERT_EVENTS`.

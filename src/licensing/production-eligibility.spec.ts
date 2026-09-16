@@ -101,6 +101,7 @@ describe('production eligibility', () => {
     site?: Assessment;
     product?: unknown;
     batches?: unknown[];
+    registrations?: unknown[];
     mode?: EnforcementMode;
   }) {
     const licensed = (): Assessment => ({
@@ -133,14 +134,27 @@ describe('production eligibility', () => {
       'product' in options ? options.product : product(),
     );
     const batches = readOnlyRepo(options.batches ?? []);
+    const productRegistrations = readOnlyRepo(
+      'registrations' in options
+        ? (options.registrations ?? [])
+        : [
+            {
+              id: 1,
+              registrationNumber: 'PR-100',
+              status: 'APPROVED',
+              expiresOn: '2099-12-12',
+            },
+          ],
+    );
 
     const service = new ProductionEligibilityService(
       enforcement as never,
       products as never,
       batches as never,
+      productRegistrations as never,
     );
 
-    return { service, enforcement, products, batches, assess };
+    return { service, enforcement, products, batches, productRegistrations, assess };
   }
 
   const ask = (over: Record<string, unknown> = {}) => ({
@@ -183,13 +197,13 @@ describe('production eligibility', () => {
       ]);
     });
 
-    it('ships the two post-MVP checks inert rather than absent', async () => {
-      // They are in the list so the response shape does not change on the day
-      // product authorization and per-production approval go live.
-      const result = await harness({}).service.evaluate(ask());
+    it('ships only per-production approval inert rather than absent', async () => {
+      const result = await harness({
+        registrations: [],
+      }).service.evaluate(ask());
 
       expect(statusOf(result, EligibilityCheckCode.PRODUCT_AUTHORIZATION)).toBe(
-        'NOT_APPLICABLE',
+        'FAIL',
       );
       expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
         'NOT_APPLICABLE',
@@ -359,15 +373,18 @@ describe('production eligibility', () => {
       }
     });
 
-    it('does not let a warning defeat eligibility', async () => {
+    it('does not let a non-blocking warning defeat eligibility', async () => {
       const result = await harness({
         organization: {
           verdict: LicenseVerdict.LICENSED,
-          license: licence({ provisional: true }),
+          license: licence({
+            category: category({ permittedProductCategories: ['DAIRY'] }),
+          }),
         },
+        product: product({ categoryId: null, productCategory: null }),
       }).service.evaluate(ask());
 
-      expect(statusOf(result, EligibilityCheckCode.ORGANIZATION_LICENCE)).toBe('WARN');
+      expect(statusOf(result, EligibilityCheckCode.PRODUCT_CATEGORY_COVERAGE)).toBe('WARN');
       expect(result.eligible).toBe(true);
       expect(result.blocking).toBe(false);
     });
@@ -387,9 +404,7 @@ describe('production eligibility', () => {
   // -------------------------------------------------------- individual checks
 
   describe('ORGANIZATION_LICENCE', () => {
-    it('warns, never fails, on a provisional licence inside its dates', async () => {
-      // D2 and invariant 13. 180 of 182 licences on the platform are grace
-      // records; failing them would stop almost everything that produces today.
+    it('fails on a provisional licence even inside its dates', async () => {
       const result = await harness({
         organization: {
           verdict: LicenseVerdict.LICENSED,
@@ -400,7 +415,7 @@ describe('production eligibility', () => {
       const check = result.checks.find(
         (entry) => entry.code === EligibilityCheckCode.ORGANIZATION_LICENCE,
       );
-      expect(check?.status).toBe('WARN');
+      expect(check?.status).toBe('FAIL');
       expect(check?.message).toContain('provisional');
       expect(check?.message).toContain('2099-12-12');
       expect(check?.remedy?.href).toBe('/licenses');
@@ -473,10 +488,7 @@ describe('production eligibility', () => {
       expect(result.eligible).toBe(false);
     });
 
-    it('does not repeat the provisional warning on the facility check', async () => {
-      // D2 assigns the warning to ORGANIZATION_LICENCE. Saying it twice about
-      // one licence would double a warning that already appears on nearly every
-      // run on the platform.
+    it('does not repeat the provisional failure on the facility check', async () => {
       const provisional = {
         verdict: LicenseVerdict.LICENSED,
         license: licence({ provisional: true }),
@@ -486,7 +498,7 @@ describe('production eligibility', () => {
         site: provisional,
       }).service.evaluate(ask());
 
-      expect(statusOf(result, EligibilityCheckCode.ORGANIZATION_LICENCE)).toBe('WARN');
+      expect(statusOf(result, EligibilityCheckCode.ORGANIZATION_LICENCE)).toBe('FAIL');
       expect(statusOf(result, EligibilityCheckCode.FACILITY_AUTHORIZATION)).toBe('PASS');
     });
   });
@@ -560,6 +572,53 @@ describe('production eligibility', () => {
       const check = result.checks[2];
       expect(check.status).toBe('FAIL');
       expect(check.message).toContain('Pharmaceuticals');
+      expect(result.eligible).toBe(false);
+    });
+  });
+
+  describe('PRODUCT_AUTHORIZATION', () => {
+    it('passes when an approved registration covers the requested date', async () => {
+      const result = await harness({
+        registrations: [
+          {
+            id: 7,
+            registrationNumber: 'PR-0007',
+            status: 'APPROVED',
+            expiresOn: '2099-01-01',
+          },
+        ],
+      }).service.evaluate(ask());
+
+      const check = result.checks.find(
+        (entry) => entry.code === EligibilityCheckCode.PRODUCT_AUTHORIZATION,
+      );
+      expect(check?.status).toBe('PASS');
+      expect(check?.message).toContain('PR-0007');
+    });
+
+    it('fails when product registration is suspended', async () => {
+      const result = await harness({
+        registrations: [
+          {
+            id: 8,
+            registrationNumber: 'PR-0008',
+            status: 'SUSPENDED',
+            expiresOn: null,
+          },
+        ],
+      }).service.evaluate(ask());
+
+      const check = result.checks.find(
+        (entry) => entry.code === EligibilityCheckCode.PRODUCT_AUTHORIZATION,
+      );
+      expect(check?.status).toBe('FAIL');
+      expect(check?.message).toContain('suspended');
+      expect(result.eligible).toBe(false);
+    });
+
+    it('fails when no approved product registration exists', async () => {
+      const result = await harness({ registrations: [] }).service.evaluate(ask());
+      expect(statusOf(result, EligibilityCheckCode.PRODUCT_AUTHORIZATION)).toBe('FAIL');
       expect(result.eligible).toBe(false);
     });
   });

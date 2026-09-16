@@ -1,5 +1,17 @@
-import { Body, Controller, Get, HttpCode, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Patch,
+  Post,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags } from '@nestjs/swagger';
+import type { Request, Response } from 'express';
+import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { CurrentUser, Public, RequireCapability } from '../../common/decorators';
 import { Capability } from '../capabilities';
 import { RateLimit } from '../../security/rate-limit.guard';
@@ -10,9 +22,13 @@ import {
   RequestPasswordResetDto,
   ResetPasswordDto,
 } from '../dto/auth.dto';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import {
+  clearSessionCookie,
+  sessionTtlSeconds,
+  setSessionCookie,
+} from '../session-cookie';
 import { User } from '../entities/user.entity';
-import { AuthService } from '../services/auth.service';
+import { AuthService, type AuthResult, type LoginResult } from '../services/auth.service';
 
 class UpdateProfileDto {
   @IsOptional()
@@ -22,32 +38,115 @@ class UpdateProfileDto {
   fullName?: string;
 }
 
+class MfaCodeDto {
+  @IsString()
+  @MinLength(6)
+  @MaxLength(8)
+  code: string;
+}
+
+class MfaVerifyLoginDto {
+  @IsString()
+  @MinLength(20)
+  mfaToken: string;
+
+  @IsString()
+  @MinLength(6)
+  @MaxLength(8)
+  code: string;
+}
+
+class MfaDisableDto {
+  @IsString()
+  @MinLength(1)
+  password: string;
+
+  @IsString()
+  @MinLength(6)
+  @MaxLength(8)
+  code: string;
+}
+
 @ApiTags('Auth')
 @Controller('api/auth')
 export class AuthController {
-  constructor(private readonly auth: AuthService) {}
+  constructor(
+    private readonly auth: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
-  // Registration is open, so it is also the cheapest way to fill the user
-  // table. Ten new accounts an hour from one address is generous for a real
-  // business and useless for a script.
   @Post('register')
   @Public()
   @RateLimit('register', 20, 60 * 60 * 1000)
-  async register(@Body() dto: RegisterDto) {
-    return this.auth.register(dto);
+  async register(
+    @Body() dto: RegisterDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.auth.register(dto);
+    this.attachSession(res, result.token);
+    return result;
   }
 
-  // Brute-force protection: the same wrong password cannot be tried all day.
   @Post('login')
   @Public()
   @HttpCode(200)
-  @RateLimit('login', 20, 15 * 60 * 1000)
-  async login(@Body() dto: LoginDto) {
-    return this.auth.login(dto);
+  @RateLimit('login', 10, 15 * 60 * 1000)
+  async login(
+    @Body() dto: LoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<LoginResult> {
+    const result = await this.auth.login(dto, req.ip);
+    if ('token' in result) {
+      this.attachSession(res, result.token);
+    }
+    return result;
   }
 
-  // Five requests per address per quarter-hour is plenty for a human and
-  // useless for someone harvesting or flooding inboxes.
+  @Post('mfa/verify-login')
+  @Public()
+  @HttpCode(200)
+  @RateLimit('login', 10, 15 * 60 * 1000)
+  async verifyMfaLogin(
+    @Body() dto: MfaVerifyLoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<AuthResult> {
+    const result = await this.auth.verifyMfaLogin(
+      dto.mfaToken,
+      dto.code,
+      req.ip,
+    );
+    this.attachSession(res, result.token);
+    return result;
+  }
+
+  @Post('mfa/setup')
+  @HttpCode(200)
+  beginMfaSetup(@CurrentUser() user: User) {
+    return this.auth.beginMfaSetup(user);
+  }
+
+  @Post('mfa/confirm')
+  @HttpCode(200)
+  confirmMfaSetup(@CurrentUser() user: User, @Body() dto: MfaCodeDto) {
+    return this.auth.confirmMfaSetup(user, dto.code);
+  }
+
+  @Post('mfa/disable')
+  @HttpCode(200)
+  disableMfa(@CurrentUser() user: User, @Body() dto: MfaDisableDto) {
+    return this.auth.disableMfa(user, dto.password, dto.code);
+  }
+
+  @Post('logout')
+  @Public()
+  @HttpCode(200)
+  logout(@Res({ passthrough: true }) res: Response) {
+    clearSessionCookie(res);
+    return { success: true };
+  }
+
   @Post('forgot-password')
   @Public()
   @HttpCode(200)
@@ -56,8 +155,6 @@ export class AuthController {
     return this.auth.requestPasswordReset(dto);
   }
 
-  // The token itself is the gate: replaying it fails, guessing it is not
-  // feasible. The rate limit just keeps a hammering client from burning CPU.
   @Post('reset-password')
   @Public()
   @HttpCode(200)
@@ -66,29 +163,23 @@ export class AuthController {
     return this.auth.resetPassword(dto);
   }
 
-  /** Replaces the caller's password and clears mustChangePassword. */
   @Post('change-password')
   @HttpCode(200)
   async changePassword(
     @CurrentUser() user: User,
     @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) res: Response,
   ) {
-    return this.auth.changePassword(user, dto);
+    const result = await this.auth.changePassword(user, dto);
+    this.attachSession(res, result.token);
+    return result;
   }
 
-  /**
-   * Who the bearer token belongs to, and what they may act as.
-   *
-   * Carries the caller's resolved capability list. The browser draws its
-   * navigation from that list rather than from a table of its own, so a role
-   * change here is a role change there.
-   */
   @Get('me')
   async me(@CurrentUser() user: User) {
     return this.auth.me(user);
   }
 
-  /** Self-service: update the caller's own display name. */
   @Patch('me')
   @HttpCode(200)
   async updateProfile(
@@ -98,14 +189,14 @@ export class AuthController {
     return this.auth.updateProfile(user, dto);
   }
 
-  /**
-   * The role/capability reference table: what every capability means and
-   * which roles hold it. Reference data, not anybody's data, so any signed-in
-   * user may read it - it is what the Roles screen renders.
-   */
   @Get('capabilities')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   capabilities() {
     return this.auth.catalogue();
+  }
+
+  private attachSession(res: Response, token: string) {
+    const expiresIn = this.config.get<string>('jwt.expiresIn');
+    setSessionCookie(res, token, sessionTtlSeconds(expiresIn));
   }
 }

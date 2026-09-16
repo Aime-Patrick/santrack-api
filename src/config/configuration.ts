@@ -62,6 +62,12 @@ export interface AppConfig {
     smtpPass: string;
     from: string;
   };
+  security: {
+    /** Optional Slack/Teams-style webhook for high-signal auth failures. */
+    alertWebhookUrl?: string;
+    /** Comma-separated event names that trigger the webhook. */
+    alertEvents: string;
+  };
 }
 
 export default (): AppConfig => ({
@@ -75,35 +81,29 @@ export default (): AppConfig => ({
   },
   jwt: {
     secret: requireSecret(),
-    expiresIn: process.env.JWT_EXPIRES_IN ?? '24h',
+    // Short-lived until refresh tokens / MFA land. Override with JWT_EXPIRES_IN.
+    expiresIn: process.env.JWT_EXPIRES_IN ?? '8h',
   },
-  corsOrigins: (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean),
+  corsOrigins: parseCorsOrigins(),
   appPublicUrl:
     process.env.APP_PUBLIC_URL ??
-    (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
-      .split(',')
-      .map((origin) => origin.trim())
-      .filter(Boolean)[0] ??
+    parseCorsOrigins()[0] ??
     'http://localhost:3000',
   trustProxyHops: parseInt(process.env.TRUST_PROXY_HOPS ?? '0', 10),
   maintenance: {
     nearExpiryDays: parseInt(process.env.NEAR_EXPIRY_DAYS ?? '30', 10),
   },
   licensing: {
-    // Advisory by default: the proposal asks the regulator to see and act on
-    // non-compliance, not for the platform to stop the factory line.
-    enforcement: (process.env.LICENSING_ENFORCEMENT ?? 'advisory').toLowerCase(),
+    // Real-world deployment default: non-compliant production is blocked.
+    enforcement: (process.env.LICENSING_ENFORCEMENT ?? 'strict').toLowerCase(),
     provisionalDays: parseInt(process.env.LICENSING_PROVISIONAL_DAYS ?? '90', 10),
   },
   rateLimits: {
     // A person mistyping a password a few times, plus a client that retries,
     // must not lock themselves out; a script guessing passwords must not get
-    // far. Twenty in a quarter of an hour sits between those.
+    // far. Ten in a quarter of an hour sits between those.
     login: {
-      limit: parseInt(process.env.RATE_LIMIT_LOGIN ?? '20', 10),
+      limit: parseInt(process.env.RATE_LIMIT_LOGIN ?? '10', 10),
       windowMs: parseInt(process.env.RATE_LIMIT_LOGIN_WINDOW_MS ?? String(15 * 60 * 1000), 10),
     },
     register: {
@@ -144,6 +144,12 @@ export default (): AppConfig => ({
     smtpPass: process.env.SMTP_PASS ?? '',
     from: process.env.EMAIL_FROM ?? 'noreply@santrack.rw',
   },
+  security: {
+    alertWebhookUrl: process.env.SECURITY_ALERT_WEBHOOK_URL?.trim() || undefined,
+    alertEvents:
+      process.env.SECURITY_ALERT_EVENTS ??
+      'auth.login_failed,auth.mfa_failed',
+  },
 });
 
 /**
@@ -159,4 +165,34 @@ function requireSecret(): string {
     );
   }
   return secret;
+}
+
+function parseCorsOrigins(): string[] {
+  const origins = (process.env.CORS_ORIGINS ?? 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (origins.some((origin) => origin === '*')) {
+    throw new Error(
+      'CORS_ORIGINS must not include "*". List explicit browser origins.',
+    );
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    const onlyLocal =
+      origins.length > 0 &&
+      origins.every(
+        (origin) =>
+          origin.startsWith('http://localhost') ||
+          origin.startsWith('http://127.0.0.1'),
+      );
+    if (onlyLocal) {
+      throw new Error(
+        'CORS_ORIGINS in production must include your real frontend origin (not only localhost).',
+      );
+    }
+  }
+
+  return origins;
 }

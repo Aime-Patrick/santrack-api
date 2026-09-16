@@ -4,10 +4,13 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
+  Optional,
   SetMetadata,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
+import { RedisCacheService } from '../cache/redis-cache.service';
 import { FixedWindowLimiter } from './rate-limit';
 import { clientAddress } from './client-address';
 
@@ -41,22 +44,23 @@ export const RateLimit = (policy: string, limit: number, windowMs: number) =>
  * Enforces `@RateLimit`. Registered globally and inert on routes that do not
  * declare it, so adding a limit is a one-line change at the endpoint.
  *
- * State lives in this process. Behind more than one instance each replica
- * enforces its own share of the limit, which is the point at which this should
- * move to Redis - noted here rather than in a backlog because the failure is
- * silent: the limit simply multiplies by the number of replicas.
+ * Prefers Redis (shared across replicas) and falls back to in-process windows
+ * when Redis is unavailable so local / degraded deploys still rate-limit.
  */
 @Injectable()
 export class RateLimitGuard implements CanActivate {
-  /** One window set per policy, since policies carry different limits. */
-  private readonly limiters = new Map<string, FixedWindowLimiter>();
+  private readonly logger = new Logger(RateLimitGuard.name);
+  /** One in-memory window set per policy (fallback / single-instance). */
+  private readonly memoryLimiters = new Map<string, FixedWindowLimiter>();
+  private warnedFallback = false;
 
   constructor(
     private readonly reflector: Reflector,
     private readonly config: ConfigService,
+    @Optional() private readonly redis?: RedisCacheService,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const declared = this.reflector.getAllAndOverride<RateLimitOptions | undefined>(
       RATE_LIMIT_KEY,
       [context.getHandler(), context.getClass()],
@@ -65,38 +69,41 @@ export class RateLimitGuard implements CanActivate {
       return true;
     }
 
-    const limiter = this.limiterFor(declared);
-    // A limit configured as zero switches the policy off outright, which is
-    // what the walkthrough and local development need.
-    if (limiter === null) {
+    const resolved = this.resolvePolicy(declared);
+    if (resolved === null) {
       return true;
     }
 
     const request = context.switchToHttp().getRequest();
-    // Prefer X-Forwarded-For when a trusted proxy sits in front; see
-    // TRUST_PROXY_HOPS in main.ts and client-address.ts.
-    if (limiter.hit(clientAddress(request) ?? 'unknown') === -1) {
-      throw new HttpException(
-        {
-          statusCode: HttpStatus.TOO_MANY_REQUESTS,
-          error: 'Too Many Requests',
-          message:
-            'Too many attempts from this address. Wait a moment and try again.',
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
+    const address = clientAddress(request) ?? 'unknown';
+    const key = `rl:${resolved.policy}:${address}`;
+
+    const redisCount = await this.redis?.incrFixedWindow(key, resolved.windowMs);
+    if (redisCount !== null && redisCount !== undefined) {
+      if (redisCount > resolved.limit) {
+        throw tooManyRequests();
+      }
+      return true;
+    }
+
+    if (!this.warnedFallback) {
+      this.warnedFallback = true;
+      this.logger.warn(
+        'Rate limits using in-process memory (Redis unavailable). Limits will not be shared across replicas.',
       );
     }
 
+    const limiter = this.memoryLimiterFor(resolved);
+    if (limiter.hit(address) === -1) {
+      throw tooManyRequests();
+    }
     return true;
   }
 
-  /** Null when the policy is disabled. Limiters are built once and reused. */
-  private limiterFor(declared: RateLimitOptions): FixedWindowLimiter | null {
-    const existing = this.limiters.get(declared.policy);
-    if (existing) {
-      return existing;
-    }
-
+  /** Null when the policy is disabled. */
+  private resolvePolicy(
+    declared: RateLimitOptions,
+  ): { policy: string; limit: number; windowMs: number } | null {
     const limit =
       this.config.get<number>(`rateLimits.${declared.policy}.limit`) ??
       declared.limit;
@@ -107,9 +114,30 @@ export class RateLimitGuard implements CanActivate {
     if (limit <= 0) {
       return null;
     }
+    return { policy: declared.policy, limit, windowMs };
+  }
 
-    const limiter = new FixedWindowLimiter(limit, windowMs);
-    this.limiters.set(declared.policy, limiter);
+  private memoryLimiterFor(resolved: {
+    policy: string;
+    limit: number;
+    windowMs: number;
+  }): FixedWindowLimiter {
+    const existing = this.memoryLimiters.get(resolved.policy);
+    if (existing) return existing;
+    const limiter = new FixedWindowLimiter(resolved.limit, resolved.windowMs);
+    this.memoryLimiters.set(resolved.policy, limiter);
     return limiter;
   }
+}
+
+function tooManyRequests(): HttpException {
+  return new HttpException(
+    {
+      statusCode: HttpStatus.TOO_MANY_REQUESTS,
+      error: 'Too Many Requests',
+      message:
+        'Too many attempts from this address. Wait a moment and try again.',
+    },
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 }

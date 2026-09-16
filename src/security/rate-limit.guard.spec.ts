@@ -40,69 +40,74 @@ function guardFor(
   options: RateLimitOptions | undefined,
   overrides: Record<string, number> = {},
 ): RateLimitGuard {
+  // No Redis → in-memory fallback (same as a cold start without REDIS_URL).
   return new RateLimitGuard(reflectorReturning(options), configWith(overrides));
 }
 
 const LOGIN: RateLimitOptions = { policy: 'login', limit: 3, windowMs: 60_000 };
 
 describe('RateLimitGuard', () => {
-  it('lets undecorated routes through untouched', () => {
+  it('lets undecorated routes through untouched', async () => {
     const guard = guardFor(undefined);
     for (let i = 0; i < 1000; i++) {
-      expect(guard.canActivate(contextFor('open', '10.0.0.1'))).toBe(true);
+      expect(await guard.canActivate(contextFor('open', '10.0.0.1'))).toBe(true);
     }
   });
 
-  it('allows calls up to the limit and rejects the next one', () => {
+  it('allows calls up to the limit and rejects the next one', async () => {
     const guard = guardFor(LOGIN);
     const context = contextFor('login', '10.0.0.1');
 
-    expect(guard.canActivate(context)).toBe(true);
-    expect(guard.canActivate(context)).toBe(true);
-    expect(guard.canActivate(context)).toBe(true);
-    expect(() => guard.canActivate(context)).toThrow(/Too many attempts/i);
+    expect(await guard.canActivate(context)).toBe(true);
+    expect(await guard.canActivate(context)).toBe(true);
+    expect(await guard.canActivate(context)).toBe(true);
+    await expect(guard.canActivate(context)).rejects.toThrow(/Too many attempts/i);
   });
 
-  it('counts each address separately', () => {
+  it('counts each address separately', async () => {
     const guard = guardFor({ ...LOGIN, limit: 1 });
 
-    expect(guard.canActivate(contextFor('login', '10.0.0.1'))).toBe(true);
-    // A different caller is unaffected by the first one exhausting its window.
-    expect(guard.canActivate(contextFor('login', '10.0.0.2'))).toBe(true);
-    expect(() => guard.canActivate(contextFor('login', '10.0.0.1'))).toThrow();
+    expect(await guard.canActivate(contextFor('login', '10.0.0.1'))).toBe(true);
+    expect(await guard.canActivate(contextFor('login', '10.0.0.2'))).toBe(true);
+    await expect(guard.canActivate(contextFor('login', '10.0.0.1'))).rejects.toThrow();
   });
 
-  it('falls back to the socket address when request.ip is absent', () => {
+  it('falls back to the socket address when request.ip is absent', async () => {
     const guard = guardFor({ ...LOGIN, limit: 1 });
 
-    expect(guard.canActivate(contextFor('verify', undefined, '10.0.0.9'))).toBe(true);
-    // Same underlying caller, so the second call is refused rather than
-    // slipping through on a missing field.
-    expect(() => guard.canActivate(contextFor('verify', undefined, '10.0.0.9'))).toThrow();
+    expect(await guard.canActivate(contextFor('verify', undefined, '10.0.0.9'))).toBe(
+      true,
+    );
+    await expect(
+      guard.canActivate(contextFor('verify', undefined, '10.0.0.9')),
+    ).rejects.toThrow();
   });
 
-  it('refuses rather than exempting a caller with no discoverable address', () => {
+  it('refuses rather than exempting a caller with no discoverable address', async () => {
     const guard = guardFor({ ...LOGIN, limit: 1 });
 
-    expect(guard.canActivate(contextFor('verify', undefined, undefined))).toBe(true);
-    expect(() => guard.canActivate(contextFor('verify', undefined, undefined))).toThrow();
+    expect(await guard.canActivate(contextFor('verify', undefined, undefined))).toBe(
+      true,
+    );
+    await expect(
+      guard.canActivate(contextFor('verify', undefined, undefined)),
+    ).rejects.toThrow();
   });
 
-  it('prefers a configured limit over the one declared at the route', () => {
+  it('prefers a configured limit over the one declared at the route', async () => {
     const guard = guardFor(LOGIN, { 'rateLimits.login.limit': 1 });
     const context = contextFor('login', '10.0.0.1');
 
-    expect(guard.canActivate(context)).toBe(true);
-    // Declared limit was 3; configuration tightened it to 1.
-    expect(() => guard.canActivate(context)).toThrow();
+    expect(await guard.canActivate(context)).toBe(true);
+    await expect(guard.canActivate(context)).rejects.toThrow();
   });
 
-  it('treats a configured limit of zero as off, so tests and dev can opt out', () => {
+  it('treats a configured limit of zero as off, so tests and dev can opt out', async () => {
     const guard = guardFor(LOGIN, { 'rateLimits.login.limit': 0 });
     const context = contextFor('login', '10.0.0.1');
 
     for (let i = 0; i < 50; i++) {
-      expect(guard.canActivate(context)).toBe(true);
+      expect(await guard.canActivate(context)).toBe(true);
     }
   });
 });

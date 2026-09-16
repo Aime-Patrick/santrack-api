@@ -4,6 +4,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
 import { Repository } from 'typeorm';
 import { hash } from 'bcryptjs';
+import { BCRYPT_ROUNDS } from '../password-policy';
 
 import {
   DuplicateException,
@@ -93,7 +94,7 @@ export class UserManagementService {
     const user = await this.users.save(
       this.users.create({
         email,
-        passwordHash: await hash(temporaryPassword, 10),
+        passwordHash: await hash(temporaryPassword, BCRYPT_ROUNDS),
         fullName,
         organization,
         role: dto.role,
@@ -262,7 +263,7 @@ export class UserManagementService {
       );
     }
 
-    user.passwordHash = await hash(temporaryPassword, 10);
+    user.passwordHash = await hash(temporaryPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = true;
     await this.users.save(user);
 
@@ -292,7 +293,7 @@ export class UserManagementService {
     this.requireVisible(actor, user);
 
     const temporaryPassword = randomBytes(6).toString('base64url');
-    user.passwordHash = await hash(temporaryPassword, 10);
+    user.passwordHash = await hash(temporaryPassword, BCRYPT_ROUNDS);
     user.mustChangePassword = true;
     const saved = await this.users.save(user);
 
@@ -414,13 +415,21 @@ export class UserManagementService {
   }
 }
 
-/** Readable temporary password: no ambiguous characters (0/O, 1/l). */
+/** Temporary password that always meets IsSantrackPassword (letter + digit, ≥12). */
 function generateTemporaryPassword(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  const bytes = randomBytes(12);
-  let out = '';
+  const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const alphabet = letters + digits;
+  const bytes = randomBytes(14);
+  const chars: string[] = [];
   for (let i = 0; i < bytes.length; i++) {
-    out += alphabet[bytes[i]! % alphabet.length];
+    chars.push(alphabet[bytes[i]! % alphabet.length]!);
   }
-  return out;
+  chars[0] = letters[bytes[0]! % letters.length]!;
+  chars[1] = digits[bytes[1]! % digits.length]!;
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = bytes[i]! % (i + 1);
+    [chars[i], chars[j]] = [chars[j]!, chars[i]!];
+  }
+  return chars.join('');
 }

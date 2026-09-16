@@ -1,4 +1,5 @@
 import { ArrayMaxSize, IsArray, IsBoolean, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength } from 'class-validator';
+import { IsSantrackPassword } from '../../auth/password-policy';
 
 export class CreateRegulatoryAuthorityDto {
   @IsString()
@@ -33,7 +34,7 @@ export class OnboardRegulatoryAuthorityDto {
 
   @IsOptional()
   @IsString()
-  @MinLength(8, { message: 'password must be at least 8 characters' })
+  @IsSantrackPassword()
   adminPassword?: string;
 }
 

@@ -13,20 +13,19 @@
 /**
  * The eight questions asked before a production run is permitted.
  *
- * Two ship inert by design and always return `NOT_APPLICABLE`:
- * `PRODUCT_AUTHORIZATION` (there is no product-level authorization in MVP) and
- * `PER_PRODUCTION_APPROVAL` (there are no per-production applications). They
- * are present so the response shape does not change on the day they go live.
+ * `PER_PRODUCTION_APPROVAL` currently ships inert and returns
+ * `NOT_APPLICABLE`: there are no per-production applications yet. It is present
+ * so the response shape does not change on the day it goes live.
  */
 export enum EligibilityCheckCode {
   ORGANIZATION_LICENCE = 'ORGANIZATION_LICENCE',
   FACILITY_AUTHORIZATION = 'FACILITY_AUTHORIZATION',
   PRODUCT_CATEGORY_COVERAGE = 'PRODUCT_CATEGORY_COVERAGE',
-  PRODUCT_AUTHORIZATION = 'PRODUCT_AUTHORIZATION', // inert in MVP
+  PRODUCT_AUTHORIZATION = 'PRODUCT_AUTHORIZATION',
   LICENCE_VALIDITY_AT_REQUESTED_DATE = 'LICENCE_VALIDITY_AT_REQUESTED_DATE',
   PRODUCT_TRACEABILITY = 'PRODUCT_TRACEABILITY',
   BATCH_AND_RECALL_RESTRICTIONS = 'BATCH_AND_RECALL_RESTRICTIONS',
-  PER_PRODUCTION_APPROVAL = 'PER_PRODUCTION_APPROVAL', // inert in MVP
+  PER_PRODUCTION_APPROVAL = 'PER_PRODUCTION_APPROVAL', // inert for now
 }
 
 /** The order the checks are always returned in. */

@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { DomainExceptionFilter } from './common/filters/domain-exception.filter';
 
@@ -27,6 +28,8 @@ async function bootstrap(): Promise<void> {
     app.getHttpAdapter().getInstance().set('trust proxy', trustProxy);
   }
 
+  app.use(cookieParser());
+
   app.useGlobalPipes(
     new ValidationPipe({
       // Strip anything the DTO does not declare, so a client cannot smuggle
@@ -44,8 +47,8 @@ async function bootstrap(): Promise<void> {
     origin: config.get<string[]>('corsOrigins'),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
-    // Bearer tokens travel in headers, not cookies, so credentials stay off.
-    credentials: false,
+    // HttpOnly session cookie on the API host (cross-site SPA needs this).
+    credentials: true,
     maxAge: 3600,
   });
 
@@ -53,18 +56,27 @@ async function bootstrap(): Promise<void> {
 
   const port = config.get<number>('port') ?? 8081;
 
-  const swagger = new DocumentBuilder()
-    .setTitle('SANTRACK API')
-    .setDescription('Product traceability, inventory and lifecycle management')
-    .setVersion('0.1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, swagger);
-  SwaggerModule.setup('api-docs', app, document);
+  const enableSwagger =
+    process.env.ENABLE_SWAGGER === 'true' ||
+    process.env.NODE_ENV !== 'production';
+
+  if (enableSwagger) {
+    const swagger = new DocumentBuilder()
+      .setTitle('SANTRACK API')
+      .setDescription('Product traceability, inventory and lifecycle management')
+      .setVersion('0.1.0')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, swagger);
+    SwaggerModule.setup('api-docs', app, document);
+  }
 
   await app.listen(port);
 
   console.log(`SANTRACK API listening on http://localhost:${port}`);
+  if (!enableSwagger) {
+    console.log('Swagger UI disabled in production (set ENABLE_SWAGGER=true to expose).');
+  }
 }
 
 void bootstrap();

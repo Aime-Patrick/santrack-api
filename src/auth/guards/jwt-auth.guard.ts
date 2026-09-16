@@ -13,6 +13,7 @@ import { Repository } from 'typeorm';
 import { CAPABILITY_ANY_KEY, CAPABILITY_KEY, PUBLIC_KEY } from '../../common/decorators';
 import { Capability, userCan } from '../capabilities';
 import { User } from '../entities/user.entity';
+import { SESSION_COOKIE } from '../session-cookie';
 
 /**
  * Authenticates the bearer token and resolves it to the domain user, then
@@ -96,9 +97,19 @@ export class JwtAuthGuard implements CanActivate {
 
 function bearerToken(request: Request): string | null {
   const header = request.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
-    return null;
+  if (header?.startsWith('Bearer ')) {
+    const token = header.slice(7).trim();
+    if (token.length > 0) return token;
   }
-  const token = header.slice(7).trim();
-  return token.length > 0 ? token : null;
+
+  const cookieHeader = request.headers.cookie;
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [rawName, ...rest] = part.trim().split('=');
+    if (rawName === SESSION_COOKIE) {
+      const value = decodeURIComponent(rest.join('=').trim());
+      return value.length > 0 ? value : null;
+    }
+  }
+  return null;
 }

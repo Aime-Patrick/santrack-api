@@ -3,6 +3,13 @@ import * as bcrypt from 'bcryptjs';
 import { DataSource } from 'typeorm';
 import { dataSourceOptions } from './config/data-source';
 
+/**
+ * DEMO SEED ONLY — creates accounts with well-known weak passwords.
+ * Production start refuses this unless ALLOW_DEMO_SEED=true is set with
+ * SEED_ON_START=true. Never point Minicom production at a seeded database
+ * without rotating every password first.
+ */
+
 import { User } from './auth/entities/user.entity';
 import { UserRole } from './auth/user-role.enum';
 import { Organization } from './organization/entities/organization.entity';

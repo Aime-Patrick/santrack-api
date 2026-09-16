@@ -1,8 +1,11 @@
 /**
  * Render start wrapper (free tier has no pre-deploy).
  * 1. Apply migrations
- * 2. Optionally seed demo data when SEED_ON_START=true
+ * 2. Optionally seed demo data when explicitly allowed
  * 3. Start the API
+ *
+ * Production never seeds unless ALLOW_DEMO_SEED=true is set together with
+ * SEED_ON_START=true. Demo accounts use well-known weak passwords.
  */
 import { spawnSync } from 'node:child_process';
 
@@ -20,7 +23,17 @@ run(
   ['./node_modules/typeorm/cli.js', 'migration:run', '-d', 'dist/config/data-source.js'],
 );
 
-if (process.env.SEED_ON_START === 'true') {
+const wantsSeed = process.env.SEED_ON_START === 'true';
+const isProduction = process.env.NODE_ENV === 'production';
+const allowDemoSeed = process.env.ALLOW_DEMO_SEED === 'true';
+
+if (wantsSeed) {
+  if (isProduction && !allowDemoSeed) {
+    console.error(
+      'Refusing SEED_ON_START in production. Demo passwords are public. Set ALLOW_DEMO_SEED=true only for disposable demo environments.',
+    );
+    process.exit(1);
+  }
   run('Seeding demo data', process.execPath, ['dist/seed.js']);
 }
 

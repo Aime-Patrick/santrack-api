@@ -2,6 +2,16 @@ import { createHash } from 'crypto';
 import { AuthService } from './services/auth.service';
 import { TraceabilityRuleException } from '../common/errors';
 
+jest.mock('otplib', () => ({
+  generateSecret: jest.fn(() => 'JBSWY3DPEHPK3PXP'),
+  generateURI: jest.fn(() => 'otpauth://totp/SanTrack:test@example.com?secret=JBSWY3DPEHPK3PXP'),
+  verify: jest.fn(async () => ({ valid: true })),
+}));
+
+jest.mock('qrcode', () => ({
+  toDataURL: jest.fn(async () => 'data:image/png;base64,AAA'),
+}));
+
 /**
  * Builds the service with every collaborator stubbed, matching the style of
  * the organization spec. `existing` is what `users.findOne` returns.
@@ -22,6 +32,7 @@ function service(existing: Record<string, unknown> | null) {
       return undefined;
     }),
   };
+  const securityEvents = { emit: jest.fn() };
 
   return {
     instance: new AuthService(
@@ -29,6 +40,7 @@ function service(existing: Record<string, unknown> | null) {
       jwt as never,
       email as never,
       config as never,
+      securityEvents as never,
     ),
     users,
     email,
@@ -110,7 +122,7 @@ describe('consuming a reset token', () => {
     const { instance, users } = service(user);
 
     await expect(
-      instance.resetPassword({ token: 'plain-token', newPassword: 'new-password-1' }),
+      instance.resetPassword({ token: 'plain-token', newPassword: 'new-password-12' }),
     ).resolves.toEqual({ success: true });
 
     expect(user.passwordHash).not.toBe('old-hash');
@@ -124,7 +136,7 @@ describe('consuming a reset token', () => {
     const { instance } = service(null);
 
     await expect(
-      instance.resetPassword({ token: 'not-issued', newPassword: 'new-password-1' }),
+      instance.resetPassword({ token: 'not-issued', newPassword: 'new-password-12' }),
     ).rejects.toBeInstanceOf(TraceabilityRuleException);
   });
 
@@ -134,7 +146,7 @@ describe('consuming a reset token', () => {
     const { instance } = service(user);
 
     await expect(
-      instance.resetPassword({ token: 'plain-token', newPassword: 'new-password-1' }),
+      instance.resetPassword({ token: 'plain-token', newPassword: 'new-password-12' }),
     ).rejects.toBeInstanceOf(TraceabilityRuleException);
   });
 });
