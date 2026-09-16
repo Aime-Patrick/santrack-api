@@ -28,7 +28,9 @@ services:
     plan: free
     region: oregon
     # Plain tsc uses far less RAM than nest build + Swagger plugin on free tier.
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build:render
+    # Override NODE_OPTIONS for the build only — the service env 400MB heap is for
+    # runtime; tsc now needs ~512MB after the licensing/eligibility growth.
+    buildCommand: pnpm install --frozen-lockfile && NODE_OPTIONS=--max-old-space-size=512 pnpm run build:render
     # Never use nest start here — it recompiles TS and OOMs on free tier.
     startCommand: pnpm run start:render
     healthCheckPath: /api/health
@@ -36,7 +38,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_OPTIONS
-        value: --max-old-space-size=400
+        value: --max-old-space-size=384
       - key: SEED_ON_START
         value: "false"
       - key: ALLOW_DEMO_SEED

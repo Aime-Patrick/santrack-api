@@ -60,7 +60,8 @@ In **Settings → Build & Deploy** set:
 
 Do **not** use `pnpm start` / `nest start` / `nest build` on the free plan —
 `nest build` (especially with the Swagger compiler plugin) exceeds the ~512MB
-heap. `build:render` uses plain `tsc` plus a small asset copy instead.
+heap. `build:render` uses plain `tsc` (512MB heap) plus a small asset copy
+instead. If deploy still OOMs on free tier, upgrade the web service plan.
 
 Free-tier notes: the web service spins down when idle (cold starts); Postgres and
 Key Value free instances expire if unused for a stretch — fine for demos, not for
