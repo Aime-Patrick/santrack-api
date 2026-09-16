@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -38,6 +38,21 @@ import {
 import { User } from '../entities/user.entity';
 import { UserRole } from '../user-role.enum';
 import { SecurityEventsService } from '../../security/security-events.service';
+import {
+  STORAGE_PROVIDER,
+  StorageProvider,
+} from '../../storage/storage.provider';
+
+/** Local DiceBear library ref: dicebear:{style}:{seed} */
+const LIBRARY_AVATAR_RE =
+  /^dicebear:(notionists|avataaars|lorelei|bottts):[A-Za-z0-9_-]+$/;
+
+/** Legacy CDN URLs from the first avatar iteration — still accepted. */
+const LEGACY_CDN_AVATAR_RE =
+  /^https:\/\/api\.dicebear\.com\/9\.x\/(notionists|avataaars|lorelei|bottts)\/svg\?seed=[A-Za-z0-9_-]+$/;
+
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 
 export interface AuthResult {
   token: string;
@@ -56,6 +71,10 @@ export interface AuthResult {
     mfaEnabled: boolean;
     /** True for SYSTEM_ADMIN / regulator staff until they enroll TOTP. */
     mustEnableMfa: boolean;
+    /** Library (DiceBear) URL when set; null if using an upload or none. */
+    avatarUrl: string | null;
+    /** True when a custom photo is stored (fetch via GET /api/auth/me/avatar). */
+    avatarUploaded: boolean;
     /**
      * Everything this person may do, already resolved from their role and
      * their organization's standing.
@@ -95,6 +114,8 @@ export class AuthService {
     private readonly email: EmailService,
     private readonly config: ConfigService,
     private readonly securityEvents: SecurityEventsService,
+    @Inject(STORAGE_PROVIDER)
+    private readonly storage: StorageProvider,
   ) {
     this.appPublicUrl = (
       config.get<string>('appPublicUrl') ??
@@ -139,6 +160,8 @@ export class AuthService {
         passwordHash: true,
         mustChangePassword: true,
         mfaEnabled: true,
+        avatarUrl: true,
+        avatarKey: true,
       },
       relations: { organization: true },
     });
@@ -204,6 +227,8 @@ export class AuthService {
         mustChangePassword: true,
         mfaEnabled: true,
         mfaSecret: true,
+        avatarUrl: true,
+        avatarKey: true,
       },
       relations: { organization: true },
     });
@@ -275,6 +300,8 @@ export class AuthService {
         mustChangePassword: true,
         mfaEnabled: true,
         mfaSecret: true,
+        avatarUrl: true,
+        avatarKey: true,
       },
       relations: { organization: true },
     });
@@ -310,6 +337,8 @@ export class AuthService {
         mustChangePassword: true,
         mfaEnabled: true,
         mfaSecret: true,
+        avatarUrl: true,
+        avatarKey: true,
       },
       relations: { organization: true },
     });
@@ -345,6 +374,8 @@ export class AuthService {
         passwordHash: true,
         mustChangePassword: true,
         mfaEnabled: true,
+        avatarUrl: true,
+        avatarKey: true,
       },
       relations: { organization: true },
     });
@@ -375,7 +406,7 @@ export class AuthService {
 
   async updateProfile(
     actor: User,
-    dto: { fullName?: string },
+    dto: { fullName?: string; avatarUrl?: string | null },
   ): Promise<AuthResult['user']> {
     const user = await this.users.findOne({
       where: { id: actor.id },
@@ -386,8 +417,131 @@ export class AuthService {
     if (dto.fullName !== undefined) {
       user.fullName = dto.fullName.trim() || null;
     }
+
+    if (dto.avatarUrl !== undefined) {
+      await this.applyLibraryAvatar(user, dto.avatarUrl);
+    }
+
     await this.users.save(user);
     return this.describe(user);
+  }
+
+  /**
+   * Pick a DiceBear library avatar (or clear with null). Replaces any upload.
+   */
+  async setLibraryAvatar(
+    actor: User,
+    avatarUrl: string | null,
+  ): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+    await this.applyLibraryAvatar(user, avatarUrl);
+    await this.users.save(user);
+    return this.describe(user);
+  }
+
+  async uploadAvatar(
+    actor: User,
+    file: { originalname: string; mimetype: string; buffer: Buffer; size: number },
+  ): Promise<AuthResult['user']> {
+    if (!AVATAR_MIME.has(file.mimetype)) {
+      throw new TraceabilityRuleException(
+        'Avatar must be a JPEG, PNG, WebP, or GIF image',
+      );
+    }
+    if (file.size <= 0 || file.size > AVATAR_MAX_BYTES) {
+      throw new TraceabilityRuleException('Avatar must be between 1 byte and 2 MB');
+    }
+
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+
+    const previousKey = user.avatarKey;
+    const stored = await this.storage.put({
+      folder: `avatars/${user.id}`,
+      filename: file.originalname || 'avatar.png',
+      contentType: file.mimetype,
+      content: file.buffer,
+    });
+
+    user.avatarKey = stored.key;
+    user.avatarUrl = null;
+    await this.users.save(user);
+
+    if (previousKey && previousKey !== stored.key) {
+      await this.storage.delete(previousKey).catch(() => undefined);
+    }
+
+    return this.describe(user);
+  }
+
+  async clearAvatar(actor: User): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+
+    const previousKey = user.avatarKey;
+    user.avatarUrl = null;
+    user.avatarKey = null;
+    await this.users.save(user);
+
+    if (previousKey) {
+      await this.storage.delete(previousKey).catch(() => undefined);
+    }
+
+    return this.describe(user);
+  }
+
+  async readAvatar(
+    actor: User,
+  ): Promise<{ content: Buffer; contentType: string } | null> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: { id: true, avatarKey: true },
+    });
+    if (!user?.avatarKey) return null;
+    const content = await this.storage.get(user.avatarKey);
+    const contentType = guessImageType(user.avatarKey);
+    return { content, contentType };
+  }
+
+  private async applyLibraryAvatar(
+    user: User,
+    avatarUrl: string | null,
+  ): Promise<void> {
+    if (avatarUrl === null || avatarUrl === '') {
+      const previousKey = user.avatarKey;
+      user.avatarUrl = null;
+      user.avatarKey = null;
+      if (previousKey) {
+        await this.storage.delete(previousKey).catch(() => undefined);
+      }
+      return;
+    }
+
+    if (
+      !LIBRARY_AVATAR_RE.test(avatarUrl) &&
+      !LEGACY_CDN_AVATAR_RE.test(avatarUrl)
+    ) {
+      throw new TraceabilityRuleException(
+        'Avatar must be a DiceBear library choice or an uploaded image',
+      );
+    }
+
+    const previousKey = user.avatarKey;
+    user.avatarUrl = avatarUrl;
+    user.avatarKey = null;
+    if (previousKey) {
+      await this.storage.delete(previousKey).catch(() => undefined);
+    }
   }
 
   async requestPasswordReset(dto: RequestPasswordResetDto): Promise<{ success: true }> {
@@ -499,6 +653,8 @@ export class AuthService {
       mustChangePassword: !!user.mustChangePassword,
       mfaEnabled,
       mustEnableMfa: this.mfaPolicyApplies(user) && !mfaEnabled,
+      avatarUrl: user.avatarUrl ?? null,
+      avatarUploaded: !!user.avatarKey,
       capabilities: capabilitiesFor(
         user.role,
         user.organization?.type,
@@ -506,6 +662,14 @@ export class AuthService {
       ),
     };
   }
+}
+
+function guessImageType(key: string): string {
+  const lower = key.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  return 'image/jpeg';
 }
 
 export function describeOrganization(organization: Organization) {

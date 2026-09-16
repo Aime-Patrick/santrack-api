@@ -63,6 +63,19 @@ export class User {
   mfaSecret: string | null;
 
   /**
+   * Public avatar URL when the user picked a library avatar (e.g. DiceBear).
+   * Null when using a custom upload (`avatarKey`) or no avatar.
+   */
+  @Column({ name: 'avatar_url', type: 'varchar', nullable: true })
+  avatarUrl: string | null;
+
+  /**
+   * Storage key for an uploaded profile photo. Opaque — never treat as a path.
+   */
+  @Column({ name: 'avatar_key', type: 'varchar', nullable: true })
+  avatarKey: string | null;
+
+  /**
    * Capabilities the platform operator granted to this individual user, on
    * top of what their role and organization confer. Written only through
    * PATCH /api/users/:id/capabilities, which validates against

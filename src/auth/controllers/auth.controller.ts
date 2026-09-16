@@ -1,17 +1,22 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Patch,
   Post,
   Req,
   Res,
+  StreamableFile,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
-import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsOptional, IsString, MaxLength, MinLength, ValidateIf } from 'class-validator';
 import { CurrentUser, Public, RequireCapability } from '../../common/decorators';
 import { Capability } from '../capabilities';
 import { RateLimit } from '../../security/rate-limit.guard';
@@ -29,6 +34,7 @@ import {
 } from '../session-cookie';
 import { User } from '../entities/user.entity';
 import { AuthService, type AuthResult, type LoginResult } from '../services/auth.service';
+import { TraceabilityRuleException } from '../../common/errors';
 
 class UpdateProfileDto {
   @IsOptional()
@@ -36,6 +42,14 @@ class UpdateProfileDto {
   @MinLength(2)
   @MaxLength(120)
   fullName?: string;
+}
+
+class SetAvatarDto {
+  /** DiceBear library URL, or null to clear. */
+  @ValidateIf((_, v) => v !== null)
+  @IsString()
+  @MaxLength(500)
+  avatarUrl: string | null;
 }
 
 class MfaCodeDto {
@@ -187,6 +201,52 @@ export class AuthController {
     @Body() dto: UpdateProfileDto,
   ) {
     return this.auth.updateProfile(user, dto);
+  }
+
+  @Patch('me/avatar')
+  @HttpCode(200)
+  async setLibraryAvatar(
+    @CurrentUser() user: User,
+    @Body() dto: SetAvatarDto,
+  ) {
+    return this.auth.setLibraryAvatar(user, dto.avatarUrl);
+  }
+
+  @Post('me/avatar')
+  @HttpCode(200)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAvatar(
+    @CurrentUser() user: User,
+    @UploadedFile()
+    file?: {
+      originalname: string;
+      mimetype: string;
+      buffer: Buffer;
+      size: number;
+    },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new TraceabilityRuleException('Choose an image file to upload');
+    }
+    return this.auth.uploadAvatar(user, file);
+  }
+
+  @Delete('me/avatar')
+  @HttpCode(200)
+  async clearAvatar(@CurrentUser() user: User) {
+    return this.auth.clearAvatar(user);
+  }
+
+  @Get('me/avatar')
+  async readAvatar(@CurrentUser() user: User) {
+    const avatar = await this.auth.readAvatar(user);
+    if (!avatar) {
+      throw new TraceabilityRuleException('No uploaded avatar');
+    }
+    return new StreamableFile(avatar.content, {
+      type: avatar.contentType,
+      disposition: 'inline',
+    });
   }
 
   @Get('capabilities')
