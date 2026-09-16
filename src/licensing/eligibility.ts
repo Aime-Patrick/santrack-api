@@ -13,9 +13,10 @@
 /**
  * The eight questions asked before a production run is permitted.
  *
- * `PER_PRODUCTION_APPROVAL` currently ships inert and returns
- * `NOT_APPLICABLE`: there are no per-production applications yet. It is present
- * so the response shape does not change on the day it goes live.
+ * `PER_PRODUCTION_APPROVAL` is the frozen code for facility GMP / field
+ * inspection readiness (Rwanda FDA premise inspection before manufacture).
+ * The code name is kept so historical decisions and the API contract stay
+ * stable; the human message describes the inspection gate.
  */
 export enum EligibilityCheckCode {
   ORGANIZATION_LICENCE = 'ORGANIZATION_LICENCE',
@@ -25,7 +26,7 @@ export enum EligibilityCheckCode {
   LICENCE_VALIDITY_AT_REQUESTED_DATE = 'LICENCE_VALIDITY_AT_REQUESTED_DATE',
   PRODUCT_TRACEABILITY = 'PRODUCT_TRACEABILITY',
   BATCH_AND_RECALL_RESTRICTIONS = 'BATCH_AND_RECALL_RESTRICTIONS',
-  PER_PRODUCTION_APPROVAL = 'PER_PRODUCTION_APPROVAL', // inert for now
+  PER_PRODUCTION_APPROVAL = 'PER_PRODUCTION_APPROVAL',
 }
 
 /** The order the checks are always returned in. */
@@ -76,7 +77,7 @@ export interface EligibilityResult {
  * stored on every decision so a historical verdict can be read against the
  * rules that produced it rather than against today's.
  */
-export const RULESET_VERSION = 'DR07-MVP-1';
+export const RULESET_VERSION = 'DR07-MVP-2';
 
 /** `eligible` is the absence of a failure. A `WARN` does not defeat it. */
 export function isEligible(checks: EligibilityCheck[]): boolean {

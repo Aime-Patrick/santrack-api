@@ -29,8 +29,8 @@ import { EligibilityCheck } from '../eligibility';
  * the second that decided.
  *
  * The whole check list is kept, not a summary. A verdict without its reasons
- * cannot be defended, and the two inert checks are part of the shape so a
- * decision taken today still reads the same way once they go live.
+ * cannot be defended. All eight checks are part of the shape so a decision
+ * taken today still reads the same way as the rules evolve.
  */
 @Entity('production_eligibility_decisions')
 @Index('idx_ped_organization', ['organization'])

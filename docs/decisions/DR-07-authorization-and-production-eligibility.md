@@ -305,11 +305,11 @@ Check codes, evaluated in this order, all of them always returned:
 | `ORGANIZATION_LICENCE` | is the org licensed for MANUFACTURING? | `assess(orgId, MANUFACTURING)` |
 | `FACILITY_AUTHORIZATION` | is this site authorized? | facility-scoped licence, falling back to the org-wide one (§4.1) |
 | `PRODUCT_CATEGORY_COVERAGE` | does the governing licence cover this product's category? | `LicenseCategory.permittedProductCategories` — wired up at last |
-| `PRODUCT_AUTHORIZATION` | is this product authorized where required? | §4.3; `NOT_APPLICABLE` until then |
+| `PRODUCT_AUTHORIZATION` | is this product registered / authorised for market? | `ProductRegistration` APPROVED and in date; SUSPENDED or missing → FAIL |
 | `LICENCE_VALIDITY_AT_REQUESTED_DATE` | is the licence still valid on the requested production date? | `isWithinDates(requestedDate)` — note the date, not `today()` |
 | `PRODUCT_TRACEABILITY` | can the product's traceability level be satisfied at this site? | `Product.traceabilityLevel` (DR-01) |
 | `BATCH_AND_RECALL_RESTRICTIONS` | is this product under an open recall or a suspended batch? | `RecallService`, `BatchStatus` |
-| `PER_PRODUCTION_APPROVAL` | does an applicable requirement demand a per-run approval? | §6; `NOT_APPLICABLE` until requirements exist |
+| `PER_PRODUCTION_APPROVAL` | has a regulatory GMP / field inspection passed for this site? | Latest applicable `RegulatoryInspection`: PASS → PASS, CONDITIONAL → WARN, FAIL/missing → FAIL |
 
 `LICENCE_VALIDITY_AT_REQUESTED_DATE` is the check that produces the brief's example
 *"Manufacturing licence expires before requested production date"*, and it is the reason

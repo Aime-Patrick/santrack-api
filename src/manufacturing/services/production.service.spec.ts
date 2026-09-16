@@ -94,7 +94,7 @@ function harness(options: {
       evaluatedAt: new Date(),
       checks: [],
       reliedOn: { licenseIds: [], licenseNumbers: [], categoryCodes: [] },
-      rulesetVersion: 'DR07-MVP-1',
+      rulesetVersion: 'DR07-MVP-2',
     }),
   };
 

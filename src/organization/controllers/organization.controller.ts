@@ -340,6 +340,23 @@ export class OrganizationController {
     );
   }
 
+  /**
+   * Re-delivers the email for an existing PENDING information request
+   * (same token). Does not create a second open request.
+   */
+  @Post(':id/info-requests/:requestId/resend')
+  @RequireCapability(Capability.DECIDE_LICENCES)
+  async resendInfoRequest(
+    @ActingOrg() regulator: Organization,
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('requestId', ParseIntPipe) requestId: number,
+  ) {
+    return describeInfoRequest(
+      await this.organizations.resendInfoRequest(regulator, actor, id, requestId),
+    );
+  }
+
   /** Lists all information requests filed against a registration. Regulator-only. */
   @Get(':id/info-requests')
   @RequireCapability(Capability.DECIDE_LICENCES)

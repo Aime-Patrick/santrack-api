@@ -30,7 +30,7 @@ describe('the eligibility preview endpoint', () => {
       },
     ],
     reliedOn: { licenseIds: [], licenseNumbers: [], categoryCodes: [] },
-    rulesetVersion: 'DR07-MVP-1',
+    rulesetVersion: 'DR07-MVP-2',
   };
 
   function harness() {

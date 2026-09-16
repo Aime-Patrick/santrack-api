@@ -78,14 +78,15 @@ evaluated at production-order creation · immutable `production_eligibility_deci
 compliance overview · frontend eligibility display.
 
 **MVP — out, and not to be built while these work units are open.** Product-level
-authorization (`licenses.product_id`) · `RegulatoryRequirement` · `RegulatoryAuthority` ·
-`RequirementEvent` · jurisdiction scoping · per-production applications · inspections ·
-regulator dashboards beyond what exists · `CHANGES_REQUESTED` / `WITHDRAWN` statuses ·
-`ProductFamily` · `ProductGtin` · `OrganizationRole`.
+authorization via `licenses.product_id` · `RegulatoryRequirement` · jurisdiction
+scoping · separate per-run application workflow · regulator dashboards beyond what
+exists · `CHANGES_REQUESTED` / `WITHDRAWN` statuses · `ProductFamily` · `ProductGtin` ·
+`OrganizationRole`.
 
-Two check codes ship inert by design: `PRODUCT_AUTHORIZATION` and `PER_PRODUCTION_APPROVAL`
-always return `NOT_APPLICABLE`. They are present in the ordered list so the response shape
-does not change when they go live post-MVP.
+`PRODUCT_AUTHORIZATION` and `PER_PRODUCTION_APPROVAL` are live in ruleset
+`DR07-MVP-2`: product registration must be APPROVED, and a regulatory GMP / field
+inspection must be PASS or CONDITIONAL (CONDITIONAL → WARN). The frozen codes and
+order are unchanged.
 
 ---
 
@@ -159,7 +160,7 @@ recorded here and may be revisited without rework.
 | 1 | Regulator jurisdiction / unscoped queue | **WU-3 — hard prerequisite** | **DECIDED 21 Aug 2026: accepted for MVP.** Facility-scoped applications use the existing queue and existing regulator authorization rules. An explicit MVP limitation, not the intended model; see §9 |
 | 3 | Close out provisional when a full licence is approved? | — | Leave to lapse on its own date — current behaviour, and the two are designed to coexist |
 | 6, 7 | Product authorization holder and scope | — | Post-MVP; `PRODUCT_AUTHORIZATION` ships inert |
-| 8 | `ruleset_version` before requirements exist | — | Hand-bumped constant `'DR07-MVP-1'`; a hash of `LicenseCategory` rows is better but needs a stable serialisation nobody has specified |
+| 8 | `ruleset_version` before requirements exist | — | Hand-bumped constant `'DR07-MVP-2'`; a hash of `LicenseCategory` rows is better but needs a stable serialisation nobody has specified |
 | 9 | Dedicated `DECIDE_APPLICATIONS` capability | — | Keep the existing `MANAGE_RECALL` + `requireRegulator()` pairing; introducing a capability is DR-03 territory |
 | 10 | Facility-scoped licence when its facility is deactivated | — | Stays dormant; deactivating a site is not a regulatory decision and must not forge one. Add to WU-1 tests |
 | 11 | Backdated `requestedDate` | — | Evaluate against `requestedDate`; a run recorded for a date the licence did not cover is `eligible = false` and, under ADVISORY, permitted with a finding |

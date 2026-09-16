@@ -17,6 +17,11 @@ export enum InfoRequestStatus {
   RESPONDED = 'RESPONDED',
   /** Token expired without a response. */
   EXPIRED = 'EXPIRED',
+  /**
+   * Replaced by a newer request for the same organization.
+   * Token is revoked; applicant must use the latest link.
+   */
+  SUPERSEDED = 'SUPERSEDED',
 }
 
 /**
@@ -27,9 +32,10 @@ export enum InfoRequestStatus {
  * that validates the token and renders the dynamic form, then submits the
  * requested information without needing to log in.
  *
- * One organization can have multiple of these over the course of its
- * registration lifecycle (e.g. one for missing FDA cert, another later for a
- * different document).
+ * An organization may accumulate many over its registration lifecycle, but at
+ * most one stays `PENDING`: creating another supersedes any open request
+ * (revoke-and-reissue). Failed email delivery is retried via resend on the
+ * same row — not by opening a duplicate.
  */
 @Entity('registration_info_requests')
 @Index('idx_info_request_org', ['organizationId'])

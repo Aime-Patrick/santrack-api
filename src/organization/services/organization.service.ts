@@ -765,23 +765,10 @@ export class OrganizationService {
       );
     }
 
-    const organization = await this.organizations.findOne({
-      where: { id: organizationId },
-    });
-    if (!organization) {
-      throw new NotFoundEntityException('Organization', organizationId);
-    }
+    const organization = await this.requireDecidableOrganization(organizationId);
 
-    const decidable: OnboardingStatus[] = [
-      OnboardingStatus.PENDING,
-      OnboardingStatus.CHANGES_REQUESTED,
-      OnboardingStatus.UNDER_CONSULTATION,
-    ];
-    if (!decidable.includes(organization.onboardingStatus)) {
-      throw new TraceabilityRuleException(
-        `Cannot request information from an organization that is ${organization.onboardingStatus}`,
-      );
-    }
+    // Revoke-and-reissue: at most one PENDING ask per organization.
+    await this.supersedeOpenInfoRequests(organizationId);
 
     const expiryDays = dto.expiryDays ?? 7;
     const expiresAt = new Date();
@@ -799,36 +786,75 @@ export class OrganizationService {
       }),
     );
 
-    // Build the response URL and email the applicant
-    const responseUrl = `${this.appPublicUrl}/apply/respond/${infoRequest.token}`;
+    await this.deliverInfoRequestNotification(organization, infoRequest, {
+      title: 'Information requested on your registration',
+      message:
+        `A regulator has reviewed ${organization.name}'s registration and ` +
+        `requires additional information. Check your email for the request link.`,
+    });
 
-    // Notify all staff of the organization
-    const staff = await this.staffOf(organization.id);
-    await Promise.allSettled(
-      staff.map(async (user) => {
-        await this.notifications.sendToUser(user.id, {
-          type: NotificationType.WARNING,
-          title: 'Information requested on your registration',
-          message:
-            `A regulator has reviewed ${organization.name}'s registration and ` +
-            `requires additional information. Check your email for the request link.`,
-          module: 'compliance',
-          actionUrl: '/onboarding',
-        });
+    return infoRequest;
+  }
 
-        if (user.email) {
-          await this.email
-            .sendRegistrationInfoRequest({
-              to: user.email,
-              companyName: organization.name,
-              requestMessage: dto.requestMessage,
-              responseUrl,
-              expiresAt,
-            })
-            .catch(() => undefined);
-        }
-      }),
-    );
+  /**
+   * Re-delivers the email / in-app notice for an existing PENDING request.
+   * Same token and URL — not a new request instance.
+   */
+  async resendInfoRequest(
+    regulator: Organization,
+    _actor: User,
+    organizationId: number,
+    requestId: number,
+  ): Promise<RegistrationInfoRequest> {
+    if (regulator.type !== OrganizationType.REGULATOR) {
+      throw new TraceabilityRuleException(
+        'Only a licensing authority can resend information requests',
+      );
+    }
+
+    const organization = await this.requireDecidableOrganization(organizationId);
+
+    const infoRequest = await this.infoRequests.findOne({
+      where: { id: requestId, organizationId },
+    });
+    if (!infoRequest) {
+      throw new NotFoundEntityException('RegistrationInfoRequest', requestId);
+    }
+
+    if (infoRequest.status === InfoRequestStatus.SUPERSEDED) {
+      throw new TraceabilityRuleException(
+        'This information request was replaced by a newer one. Resend the open request, or create a new one.',
+      );
+    }
+    if (infoRequest.status === InfoRequestStatus.RESPONDED) {
+      throw new TraceabilityRuleException(
+        'This information request was already answered; there is nothing to resend.',
+      );
+    }
+    if (
+      infoRequest.status === InfoRequestStatus.EXPIRED ||
+      new Date() > infoRequest.expiresAt
+    ) {
+      if (infoRequest.status === InfoRequestStatus.PENDING) {
+        infoRequest.status = InfoRequestStatus.EXPIRED;
+        await this.infoRequests.save(infoRequest);
+      }
+      throw new TraceabilityRuleException(
+        'This information request has expired. Create a new one instead of resending.',
+      );
+    }
+    if (infoRequest.status !== InfoRequestStatus.PENDING) {
+      throw new TraceabilityRuleException(
+        'Only an open information request can be resent.',
+      );
+    }
+
+    await this.deliverInfoRequestNotification(organization, infoRequest, {
+      title: 'Information request reminder',
+      message:
+        `A reminder: additional information is still required for ${organization.name}'s ` +
+        `registration. Check your email for the request link.`,
+    });
 
     return infoRequest;
   }
@@ -855,6 +881,12 @@ export class OrganizationService {
 
     if (!req) {
       throw new TraceabilityRuleException('This link is invalid or has already been used.');
+    }
+
+    if (req.status === InfoRequestStatus.SUPERSEDED) {
+      throw new TraceabilityRuleException(
+        'This request was replaced by a newer one. Use the latest link from your email, or contact the regulator.',
+      );
     }
 
     if (req.status === InfoRequestStatus.EXPIRED || new Date() > req.expiresAt) {
@@ -893,6 +925,11 @@ export class OrganizationService {
 
     if (!req) {
       throw new TraceabilityRuleException('This link is invalid or has already been used.');
+    }
+    if (req.status === InfoRequestStatus.SUPERSEDED) {
+      throw new TraceabilityRuleException(
+        'This request was replaced by a newer one. Use the latest link from your email.',
+      );
     }
     if (req.status !== InfoRequestStatus.PENDING || new Date() > req.expiresAt) {
       throw new TraceabilityRuleException('This link has expired or was already used.');
@@ -968,5 +1005,81 @@ export class OrganizationService {
       where: { organizationId },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  private async requireDecidableOrganization(
+    organizationId: number,
+  ): Promise<Organization> {
+    const organization = await this.organizations.findOne({
+      where: { id: organizationId },
+    });
+    if (!organization) {
+      throw new NotFoundEntityException('Organization', organizationId);
+    }
+
+    const decidable: OnboardingStatus[] = [
+      OnboardingStatus.PENDING,
+      OnboardingStatus.CHANGES_REQUESTED,
+      OnboardingStatus.UNDER_CONSULTATION,
+    ];
+    if (!decidable.includes(organization.onboardingStatus)) {
+      throw new TraceabilityRuleException(
+        `Cannot request information from an organization that is ${organization.onboardingStatus}`,
+      );
+    }
+    return organization;
+  }
+
+  /** Marks every open request for the org as SUPERSEDED (token revoked). */
+  private async supersedeOpenInfoRequests(organizationId: number): Promise<number> {
+    const open = await this.infoRequests.find({
+      where: { organizationId, status: InfoRequestStatus.PENDING },
+    });
+    if (open.length === 0) return 0;
+
+    for (const row of open) {
+      row.status = InfoRequestStatus.SUPERSEDED;
+    }
+    await this.infoRequests.save(open);
+    return open.length;
+  }
+
+  private async deliverInfoRequestNotification(
+    organization: Organization,
+    infoRequest: RegistrationInfoRequest,
+    copy: { title: string; message: string },
+  ): Promise<void> {
+    const responseUrl = `${this.appPublicUrl}/apply/respond/${infoRequest.token}`;
+    const staff = await this.staffOf(organization.id);
+
+    await Promise.allSettled(
+      staff.map(async (user) => {
+        await this.notifications.sendToUser(user.id, {
+          type: NotificationType.WARNING,
+          title: copy.title,
+          message: copy.message,
+          module: 'compliance',
+          actionUrl: '/onboarding',
+        });
+
+        if (user.email) {
+          await this.email
+            .sendRegistrationInfoRequest({
+              to: user.email,
+              companyName: organization.name,
+              requestMessage: infoRequest.requestMessage,
+              responseUrl,
+              expiresAt: infoRequest.expiresAt,
+            })
+            .catch((err: unknown) => {
+              this.logger.error(
+                `Failed to email info request ${infoRequest.id} to ${user.email}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
+        }
+      }),
+    );
   }
 }

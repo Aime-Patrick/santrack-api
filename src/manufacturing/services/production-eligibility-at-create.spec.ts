@@ -44,7 +44,7 @@ describe('planning a production run', () => {
       licenseNumbers: ['LIC-1'],
       categoryCodes: ['MFG'],
     },
-    rulesetVersion: 'DR07-MVP-1',
+    rulesetVersion: 'DR07-MVP-2',
   });
 
   const refused = (mode: 'OFF' | 'ADVISORY' | 'STRICT') => ({
@@ -168,7 +168,7 @@ describe('planning a production run', () => {
       eligible: true,
       blocking: false,
       enforcementMode: 'ADVISORY',
-      rulesetVersion: 'DR07-MVP-1',
+      rulesetVersion: 'DR07-MVP-2',
     });
     expect(order.eligibilityDecisionId).toBe('9001');
     expect(order.facilityId).toBe(KIGALI);
@@ -303,7 +303,7 @@ describe('planning a production run', () => {
       expect(body.eligible).toBe(false);
       expect(body.blocking).toBe(true);
       expect(body.enforcementMode).toBe('STRICT');
-      expect(body.rulesetVersion).toBe('DR07-MVP-1');
+      expect(body.rulesetVersion).toBe('DR07-MVP-2');
       expect(body.reliedOn).toEqual({
         licenseIds: [44],
         licenseNumbers: ['LIC-1'],

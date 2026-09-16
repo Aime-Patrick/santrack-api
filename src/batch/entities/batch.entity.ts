@@ -45,7 +45,8 @@ export class Batch {
   @Column({ type: 'enum', enum: BatchStatus, default: BatchStatus.ACTIVE })
   status: BatchStatus;
 
-  @Column({ name: 'status_reason', type: 'varchar', length: 1000, nullable: true })
+  /** Free-form / rich-text HTML when a recall (or other status change) records why. */
+  @Column({ name: 'status_reason', type: 'text', nullable: true })
   statusReason: string | null;
 
   @Column({ name: 'status_changed_at', type: 'timestamptz', nullable: true })

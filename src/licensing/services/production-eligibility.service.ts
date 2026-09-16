@@ -13,6 +13,10 @@ import {
 } from '../../product/entities/product-registration.entity';
 import { License } from '../entities/license.entity';
 import {
+  RegulatoryInspection,
+  RegulatoryInspectionResult,
+} from '../entities/regulatory-inspection.entity';
+import {
   EligibilityCheck,
   EligibilityCheckCode,
   EligibilityResult,
@@ -70,6 +74,8 @@ export class ProductionEligibilityService {
     private readonly batches: Repository<Batch>,
     @InjectRepository(ProductRegistration)
     private readonly productRegistrations: Repository<ProductRegistration>,
+    @InjectRepository(RegulatoryInspection)
+    private readonly inspections: Repository<RegulatoryInspection>,
   ) {}
 
   async evaluate(question: EligibilityQuestion): Promise<EligibilityResult> {
@@ -101,11 +107,7 @@ export class ProductionEligibilityService {
       this.validityAtRequestedDate(governing, requestedDate),
       this.traceability(product, question.productId),
       await this.batchAndRecall(product),
-      {
-        code: EligibilityCheckCode.PER_PRODUCTION_APPROVAL,
-        status: 'NOT_APPLICABLE',
-        message: 'No approval is required for an individual production run.',
-      },
+      await this.facilityInspection(question.organizationId, facilityId),
     ];
 
     const eligible = isEligible(checks);
@@ -559,6 +561,103 @@ export class ProductionEligibilityService {
       remedy: applyLink,
     };
   }
+
+  /**
+   * Facility GMP / field inspection readiness.
+   *
+   * Uses the frozen `PER_PRODUCTION_APPROVAL` code. A Rwanda FDA-style premise
+   * inspection must have passed (or been conditional) before manufacture.
+   * Facility-specific inspections take priority over organisation-wide ones.
+   */
+  private async facilityInspection(
+    organizationId: number,
+    facilityId: number | null,
+  ): Promise<EligibilityCheck> {
+    const code = EligibilityCheckCode.PER_PRODUCTION_APPROVAL;
+    const remedy = {
+      label: 'Open compliance cases',
+      href: '/dashboard/compliance/cases',
+    };
+
+    const inspections = await this.inspections.find({
+      where: { organization: { id: organizationId } },
+      order: { inspectedAt: 'DESC' },
+      take: 50,
+    });
+
+    const governing = pickGoverningInspection(inspections, facilityId);
+
+    if (!governing) {
+      return {
+        code,
+        status: 'FAIL',
+        message: facilityId
+          ? 'This site has no recorded regulatory GMP / field inspection. ' +
+            'A passed or conditional inspection is required before production.'
+          : 'This business has no recorded regulatory GMP / field inspection. ' +
+            'A passed or conditional inspection is required before production.',
+        remedy,
+      };
+    }
+
+    const siteLabel = governing.facility?.name ?? 'this business';
+    const when = governing.inspectedAt
+      ? ` on ${governing.inspectedAt.toISOString().slice(0, 10)}`
+      : '';
+
+    if (governing.result === RegulatoryInspectionResult.PASS) {
+      return {
+        code,
+        status: 'PASS',
+        message: `Regulatory inspection of ${siteLabel} passed${when}.`,
+      };
+    }
+
+    if (governing.result === RegulatoryInspectionResult.CONDITIONAL) {
+      return {
+        code,
+        status: 'WARN',
+        message:
+          `Regulatory inspection of ${siteLabel} was conditional${when}` +
+          (governing.notes ? ` — ${governing.notes}` : '') +
+          '. Production may continue while the conditions remain in force.',
+        remedy,
+      };
+    }
+
+    return {
+      code,
+      status: 'FAIL',
+      message:
+        `Regulatory inspection of ${siteLabel} failed${when}` +
+        (governing.notes ? ` — ${governing.notes}` : '') +
+        '. Resolve the inspection findings before producing.',
+      remedy,
+    };
+  }
+}
+
+/**
+ * Prefer a facility-specific inspection when a site is named; otherwise the
+ * latest organisation-wide (no facility) inspection, then any for the org.
+ */
+function pickGoverningInspection(
+  inspections: RegulatoryInspection[],
+  facilityId: number | null,
+): RegulatoryInspection | null {
+  if (inspections.length === 0) return null;
+
+  if (facilityId != null) {
+    return (
+      inspections.find((row) => row.facility?.id === facilityId) ??
+      inspections.find((row) => row.facility == null) ??
+      null
+    );
+  }
+
+  return (
+    inspections.find((row) => row.facility == null) ?? inspections[0] ?? null
+  );
 }
 
 function failedOn(

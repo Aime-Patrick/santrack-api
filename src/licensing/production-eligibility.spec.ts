@@ -102,6 +102,7 @@ describe('production eligibility', () => {
     product?: unknown;
     batches?: unknown[];
     registrations?: unknown[];
+    inspections?: unknown[];
     mode?: EnforcementMode;
   }) {
     const licensed = (): Assessment => ({
@@ -146,15 +147,37 @@ describe('production eligibility', () => {
             },
           ],
     );
+    const inspections = readOnlyRepo(
+      'inspections' in options
+        ? (options.inspections ?? [])
+        : [
+            {
+              id: 1,
+              result: 'PASS',
+              facility: { id: KIGALI, name: 'Kigali Plant' },
+              inspectedAt: new Date('2025-06-01T00:00:00.000Z'),
+              notes: null,
+            },
+          ],
+    );
 
     const service = new ProductionEligibilityService(
       enforcement as never,
       products as never,
       batches as never,
       productRegistrations as never,
+      inspections as never,
     );
 
-    return { service, enforcement, products, batches, productRegistrations, assess };
+    return {
+      service,
+      enforcement,
+      products,
+      batches,
+      productRegistrations,
+      inspections,
+      assess,
+    };
   }
 
   const ask = (over: Record<string, unknown> = {}) => ({
@@ -197,16 +220,13 @@ describe('production eligibility', () => {
       ]);
     });
 
-    it('ships only per-production approval inert rather than absent', async () => {
+    it('evaluates facility GMP inspection rather than leaving it inert', async () => {
       const result = await harness({
-        registrations: [],
+        inspections: [],
       }).service.evaluate(ask());
 
-      expect(statusOf(result, EligibilityCheckCode.PRODUCT_AUTHORIZATION)).toBe(
-        'FAIL',
-      );
       expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
-        'NOT_APPLICABLE',
+        'FAIL',
       );
     });
 
@@ -217,7 +237,7 @@ describe('production eligibility', () => {
         expect(check.message.length).toBeGreaterThan(0);
       }
       expect(result.rulesetVersion).toBe(RULESET_VERSION);
-      expect(result.rulesetVersion).toBe('DR07-MVP-1');
+      expect(result.rulesetVersion).toBe('DR07-MVP-2');
     });
 
     it('names the licences, numbers and category codes it relied on', async () => {
@@ -263,6 +283,8 @@ describe('production eligibility', () => {
         await expect(h.service.evaluate(ask())).resolves.toBeDefined();
         expect(h.products.save).not.toHaveBeenCalled();
         expect(h.batches.save).not.toHaveBeenCalled();
+        expect(h.inspections.save).not.toHaveBeenCalled();
+        expect(h.productRegistrations.save).not.toHaveBeenCalled();
       }
     });
 
@@ -709,6 +731,129 @@ describe('production eligibility', () => {
     it('passes when nothing is held', async () => {
       const result = await harness({ batches: [] }).service.evaluate(ask());
       expect(result.checks[6].status).toBe('PASS');
+    });
+  });
+
+  describe('PER_PRODUCTION_APPROVAL (facility GMP inspection)', () => {
+    it('fails when no inspection is on record', async () => {
+      const result = await harness({ inspections: [] }).service.evaluate(ask());
+
+      const check = result.checks[7];
+      expect(check.status).toBe('FAIL');
+      expect(check.message).toMatch(/no recorded regulatory GMP/i);
+      expect(check.remedy?.href).toBe('/dashboard/compliance/cases');
+      expect(result.eligible).toBe(false);
+    });
+
+    it('passes on a facility-specific PASS inspection', async () => {
+      const result = await harness({
+        inspections: [
+          {
+            id: 1,
+            result: 'PASS',
+            facility: { id: KIGALI, name: 'Kigali Plant' },
+            inspectedAt: new Date('2025-06-01T00:00:00.000Z'),
+            notes: null,
+          },
+        ],
+      }).service.evaluate(ask());
+
+      const check = result.checks[7];
+      expect(check.status).toBe('PASS');
+      expect(check.message).toContain('Kigali Plant');
+      expect(check.message).toContain('2025-06-01');
+    });
+
+    it('warns on CONDITIONAL without defeating eligibility', async () => {
+      const result = await harness({
+        inspections: [
+          {
+            id: 2,
+            result: 'CONDITIONAL',
+            facility: { id: KIGALI, name: 'Kigali Plant' },
+            inspectedAt: new Date('2025-07-01T00:00:00.000Z'),
+            notes: 'Improve cold-chain logging',
+          },
+        ],
+      }).service.evaluate(ask());
+
+      expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
+        'WARN',
+      );
+      expect(result.checks[7].message).toContain('Improve cold-chain logging');
+      expect(result.eligible).toBe(true);
+    });
+
+    it('fails on the latest FAIL inspection for the site', async () => {
+      const result = await harness({
+        inspections: [
+          {
+            id: 3,
+            result: 'FAIL',
+            facility: { id: KIGALI, name: 'Kigali Plant' },
+            inspectedAt: new Date('2025-08-01T00:00:00.000Z'),
+            notes: 'Critical hygiene findings',
+          },
+        ],
+      }).service.evaluate(ask());
+
+      expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
+        'FAIL',
+      );
+      expect(result.checks[7].message).toContain('Critical hygiene findings');
+      expect(result.eligible).toBe(false);
+    });
+
+    it('prefers a facility inspection over an organisation-wide one', async () => {
+      const result = await harness({
+        inspections: [
+          {
+            id: 10,
+            result: 'PASS',
+            facility: null,
+            inspectedAt: new Date('2025-09-01T00:00:00.000Z'),
+            notes: null,
+          },
+          {
+            id: 11,
+            result: 'FAIL',
+            facility: { id: KIGALI, name: 'Kigali Plant' },
+            inspectedAt: new Date('2025-05-01T00:00:00.000Z'),
+            notes: 'Older site fail',
+          },
+        ],
+      }).service.evaluate(ask({ facilityId: KIGALI }));
+
+      expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
+        'FAIL',
+      );
+      expect(result.checks[7].message).toContain('Older site fail');
+    });
+
+    it('falls back to an organisation-wide PASS when the site has none', async () => {
+      const result = await harness({
+        inspections: [
+          {
+            id: 12,
+            result: 'PASS',
+            facility: null,
+            inspectedAt: new Date('2025-04-01T00:00:00.000Z'),
+            notes: null,
+          },
+          {
+            id: 13,
+            result: 'FAIL',
+            facility: { id: HUYE, name: 'Huye Plant' },
+            inspectedAt: new Date('2025-08-01T00:00:00.000Z'),
+            notes: null,
+          },
+        ],
+      }).service.evaluate(ask({ facilityId: KIGALI }));
+
+      expect(statusOf(result, EligibilityCheckCode.PER_PRODUCTION_APPROVAL)).toBe(
+        'PASS',
+      );
+      expect(result.checks[7].message).toContain('this business');
     });
   });
 });
