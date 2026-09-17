@@ -68,11 +68,13 @@ describe('applying for a site licence', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
+      {} as never,
       { next: jest.fn().mockResolvedValue(1) } as never,
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
+      { get: jest.fn() } as never,
     );
 
     return { instance, saved };
@@ -202,11 +204,13 @@ describe('applying for a site licence', () => {
         {} as never,
         {} as never,
         {} as never,
+        {} as never,
+        {} as never,
         { next: jest.fn().mockResolvedValue(2) } as never,
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
+        { get: jest.fn() } as never,
       );
       return { instance, saved };
     }

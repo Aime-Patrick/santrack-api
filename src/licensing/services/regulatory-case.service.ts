@@ -1,10 +1,12 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { User } from '../../auth/entities/user.entity';
 import { UserRole } from '../../auth/user-role.enum';
 import { Batch } from '../../batch/entities/batch.entity';
 import { NotFoundEntityException, TraceabilityRuleException } from '../../common/errors';
+import { EmailService } from '../../email/email.service';
 import { Facility } from '../../organization/entities/facility.entity';
 import { Organization } from '../../organization/entities/organization.entity';
 import { OrganizationType } from '../../organization/organization-type.enum';
@@ -26,6 +28,7 @@ import {
 } from '../entities/regulatory-case.entity';
 import { RegulatoryAuthority } from '../entities/regulatory-authority.entity';
 import { RegulatoryAuthorityService } from './regulatory-authority.service';
+import { RegulatoryTeamService } from './regulatory-team.service';
 import { ReferRegulatoryCaseDto } from '../dto/regulatory-case.dto';
 import { UploadedFile } from './license.service';
 
@@ -34,6 +37,8 @@ const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
 
 @Injectable()
 export class RegulatoryCaseService {
+  private readonly logger = new Logger(RegulatoryCaseService.name);
+
   constructor(
     @InjectRepository(RegulatoryCase)
     private readonly cases: Repository<RegulatoryCase>,
@@ -58,21 +63,52 @@ export class RegulatoryCaseService {
     @InjectRepository(RegulatoryCaseReferral)
     private readonly referrals: Repository<RegulatoryCaseReferral>,
     private readonly authorityService: RegulatoryAuthorityService,
+    private readonly teamService: RegulatoryTeamService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
     private readonly notifications: NotificationsGateway,
+    private readonly email: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
-  async listForAuthority(authority: RegulatoryAuthority, status?: RegulatoryCaseStatus, assignedToId?: number) {
-    return this.cases.find({
-      where: {
-        leadAuthority: { id: authority.id },
-        ...(status ? { status } : {}),
-        ...(assignedToId ? { assignedTo: { id: assignedToId } } : {}),
-      },
+  async listForAuthority(
+    authority: RegulatoryAuthority,
+    status?: RegulatoryCaseStatus,
+    assignedToId?: number,
+    scope?: 'all' | 'mine' | 'team',
+    actorId?: number,
+  ) {
+    const where: Record<string, unknown> = {
+      leadAuthority: { id: authority.id },
+      ...(status ? { status } : {}),
+      ...(assignedToId ? { assignedTo: { id: assignedToId } } : {}),
+    };
+
+    if (scope === 'mine' && actorId) {
+      where.assignedTo = { id: actorId };
+    }
+
+    let rows = await this.cases.find({
+      where,
+      relations: { assignedTeamRef: true },
       order: { openedAt: 'DESC' },
       take: 200,
     });
+
+    if (scope === 'team' && actorId) {
+      const [teamIds, teamNames] = await Promise.all([
+        this.teamService.teamIdsForUser(authority.id, actorId),
+        this.teamService.teamNamesForUser(authority.id, actorId),
+      ]);
+      rows = rows.filter(
+        (row) =>
+          row.assignedTo?.id === actorId ||
+          (row.assignedTeamRef?.id != null && teamIds.includes(row.assignedTeamRef.id)) ||
+          (row.assignedTeam != null && teamNames.includes(row.assignedTeam)),
+      );
+    }
+
+    return rows;
   }
 
   async officers(regulator: Organization): Promise<User[]> {
@@ -83,13 +119,19 @@ export class RegulatoryCaseService {
   }
 
   async one(id: number): Promise<RegulatoryCase> {
-    const caseRecord = await this.cases.findOne({ where: { id } });
+    const caseRecord = await this.cases.findOne({
+      where: { id },
+      relations: { assignedTeamRef: true },
+    });
     if (!caseRecord) throw new NotFoundEntityException('RegulatoryCase', id);
     return caseRecord;
   }
 
   async oneForAuthority(id: number, authority: RegulatoryAuthority): Promise<RegulatoryCase> {
-    const caseRecord = await this.cases.findOne({ where: { id, leadAuthority: { id: authority.id } } });
+    const caseRecord = await this.cases.findOne({
+      where: { id, leadAuthority: { id: authority.id } },
+      relations: { assignedTeamRef: true },
+    });
     if (!caseRecord) throw new NotFoundEntityException('RegulatoryCase', id);
     return caseRecord;
   }
@@ -276,10 +318,8 @@ export class RegulatoryCaseService {
     if (caseCategory && !leadAuthority.caseCategories.includes(caseCategory)) {
       throw new TraceabilityRuleException('Choose a case category configured by your authority');
     }
-    const assignedTeam = dto.assignedTeam?.trim() || null;
-    if (assignedTeam && !leadAuthority.teams.includes(assignedTeam)) {
-      throw new TraceabilityRuleException('Choose a team configured by your authority');
-    }
+    const desk = await this.resolveTeam(leadAuthority, dto.assignedTeamId, dto.assignedTeam);
+    if (desk) await this.teamService.assertWithinWorkloadCap(desk);
     const organization = await this.organizations.findOne({ where: { id: dto.organizationId } });
     if (!organization) throw new NotFoundEntityException('Organization', dto.organizationId);
     const [facility, license, finding, batch] = await Promise.all([
@@ -305,7 +345,8 @@ export class RegulatoryCaseService {
       organization,
       leadAuthority,
       caseCategory,
-      assignedTeam,
+      assignedTeam: desk?.name ?? null,
+      assignedTeamRef: desk ?? null,
       facility: facility ?? null,
       license: license ?? null,
       finding: finding ?? null,
@@ -326,7 +367,8 @@ export class RegulatoryCaseService {
       dueOn: caseRecord.dueOn,
       leadAuthorityId: leadAuthority.id,
       caseCategory,
-      assignedTeam,
+      assignedTeam: desk?.name ?? null,
+      assignedTeamId: desk?.id ?? null,
     });
     this.notifyBusinessOpened(caseRecord).catch(() => undefined);
     return caseRecord;
@@ -376,6 +418,7 @@ export class RegulatoryCaseService {
     if (officer.organization?.id !== actor.organization?.id) {
       throw new TraceabilityRuleException('Cases may only be assigned to an officer in your regulatory authority');
     }
+    await this.assertCanAssign(actor, authority, caseRecord, undefined, officer.id);
     caseRecord.assignedTo = officer;
     if (caseRecord.status === RegulatoryCaseStatus.OPEN) caseRecord.status = RegulatoryCaseStatus.IN_PROGRESS;
     const saved = await this.cases.save(caseRecord);
@@ -384,26 +427,84 @@ export class RegulatoryCaseService {
       note: note?.trim() || null,
     });
     if (officer.id !== actor.id) {
+      const caseLabel = saved.caseNumber ?? `case #${saved.id}`;
+      const title = `Assigned to you — ${caseLabel}`;
+      const message = `${saved.title}. Open the case to inspect, request evidence, or close it.`;
+      const actionUrl = `/dashboard/regulator?tab=enforcement&case=${saved.id}`;
       this.notifications
         .sendToUser(officer.id, {
           type: NotificationType.WARNING,
-          title: `Assigned to you — ${saved.caseNumber ?? `case #${saved.id}`}`,
-          message: `${saved.title}. Open the case to inspect, request evidence, or close it.`,
+          title,
+          message,
           module: 'regulator',
-          actionUrl: `/dashboard/regulator?tab=enforcement&case=${saved.id}`,
+          actionUrl,
         })
         .catch(() => undefined);
+      void this.notifyAssignmentEmail({
+        user: officer,
+        title,
+        message,
+        caseLabel,
+        organizationName: saved.organization?.name ?? 'Business',
+        teamName: null,
+        actionUrl,
+      });
     }
     return saved;
   }
 
-  async assignTeam(id: number, actor: User, authority: RegulatoryAuthority, team: string) {
+  async assignTeam(
+    id: number,
+    actor: User,
+    authority: RegulatoryAuthority,
+    input: { teamId?: number; team?: string },
+  ) {
     const caseRecord = await this.oneForAuthority(id, authority);
-    const cleaned = team.trim();
-    if (!authority.teams.includes(cleaned)) throw new TraceabilityRuleException('Choose a team configured by your authority');
-    caseRecord.assignedTeam = cleaned;
+    const desk = await this.resolveTeam(authority, input.teamId, input.team);
+    if (!desk) {
+      throw new TraceabilityRuleException('Choose a team configured by your authority');
+    }
+    await this.assertCanAssign(actor, authority, caseRecord, desk);
+    await this.teamService.assertWithinWorkloadCap(desk);
+    caseRecord.assignedTeam = desk.name;
+    caseRecord.assignedTeamRef = desk;
     const saved = await this.cases.save(caseRecord);
-    await this.record(saved, actor, RegulatoryCaseEventType.ASSIGNED, `Assigned to team ${cleaned}`, { team: cleaned });
+    await this.record(saved, actor, RegulatoryCaseEventType.ASSIGNED, `Assigned to team ${desk.name}`, {
+      team: desk.name,
+      teamId: desk.id,
+    });
+
+    const recipients = (desk.members ?? [])
+      .map((member) => member.user)
+      .filter((user) => user?.id && user.id !== actor.id);
+    const caseLabel = saved.caseNumber ?? `case #${saved.id}`;
+    const title = `Team assignment — ${caseLabel}`;
+    const message = `${desk.name}: ${saved.title}. Open the case to pick it up or reassign.`;
+    const actionUrl = `/dashboard/regulator?tab=enforcement&case=${saved.id}`;
+    await Promise.all(
+      recipients.map((user) =>
+        this.notifications
+          .sendToUser(user.id, {
+            type: NotificationType.WARNING,
+            title,
+            message,
+            module: 'regulator',
+            actionUrl,
+          })
+          .catch(() => undefined),
+      ),
+    );
+    for (const user of recipients) {
+      void this.notifyAssignmentEmail({
+        user,
+        title,
+        message,
+        caseLabel,
+        organizationName: saved.organization?.name ?? 'Business',
+        teamName: desk.name,
+        actionUrl,
+      });
+    }
     return saved;
   }
 
@@ -473,6 +574,7 @@ export class RegulatoryCaseService {
       caseRecord.leadAuthority = authority;
       caseRecord.assignedTo = null;
       caseRecord.assignedTeam = null;
+      caseRecord.assignedTeamRef = null;
       if (caseRecord.status === RegulatoryCaseStatus.CLOSED) throw new TraceabilityRuleException('A closed case cannot be transferred');
       await this.cases.save(caseRecord);
     }
@@ -533,5 +635,101 @@ export class RegulatoryCaseService {
     });
     if (!evidence) throw new NotFoundEntityException('RegulatoryCaseEvidence', evidenceId);
     return evidence;
+  }
+
+  private async resolveTeam(
+    authority: RegulatoryAuthority,
+    teamId?: number,
+    teamName?: string,
+  ) {
+    if (teamId) {
+      const byId = await this.teamService.findActiveById(authority.id, teamId);
+      if (!byId) {
+        throw new TraceabilityRuleException('Choose a team configured by your authority');
+      }
+      return byId;
+    }
+    const cleaned = teamName?.trim() || null;
+    if (!cleaned) return null;
+    const byName = await this.teamService.findActiveByName(authority.id, cleaned);
+    if (byName) return byName;
+    throw new TraceabilityRuleException('Choose a team configured by your authority');
+  }
+
+  private async assertCanAssign(
+    actor: User,
+    authority: RegulatoryAuthority,
+    caseRecord: RegulatoryCase,
+    targetTeam?: { id: number; name: string } | null,
+    officerId?: number,
+  ) {
+    if (
+      actor.role === UserRole.ORG_ADMIN ||
+      actor.role === UserRole.MANAGEMENT ||
+      actor.role === UserRole.SYSTEM_ADMIN
+    ) {
+      return;
+    }
+    const teamIds = [caseRecord.assignedTeamRef?.id, targetTeam?.id]
+      .filter((id): id is number => typeof id === 'number' && id > 0);
+    if (await this.teamService.isLeaderOfAnyIds(authority.id, actor.id, teamIds)) {
+      return;
+    }
+    const names = [caseRecord.assignedTeam, targetTeam?.name]
+      .map((name) => name?.trim())
+      .filter((name): name is string => Boolean(name));
+    if (await this.teamService.isLeaderOfAny(authority.id, actor.id, names)) {
+      return;
+    }
+    // Team members may claim an unowned case for themselves only.
+    if (
+      officerId === actor.id &&
+      !caseRecord.assignedTo &&
+      (teamIds.length > 0 || names.length > 0)
+    ) {
+      const memberIds = await this.teamService.teamIdsForUser(authority.id, actor.id);
+      const memberNames = await this.teamService.teamNamesForUser(authority.id, actor.id);
+      if (
+        teamIds.some((id) => memberIds.includes(id)) ||
+        names.some((name) => memberNames.includes(name))
+      ) {
+        return;
+      }
+    }
+    throw new TraceabilityRuleException(
+      'Only an authority admin or the team leader may reassign this case',
+    );
+  }
+
+  private async notifyAssignmentEmail(input: {
+    user: User;
+    title: string;
+    message: string;
+    caseLabel: string;
+    organizationName: string;
+    teamName: string | null;
+    actionUrl: string;
+  }) {
+    if (!input.user.email) return;
+    const dashboardUrl = `${this.appPublicUrl()}${input.actionUrl}`;
+    await this.email
+      .sendCaseAssignment({
+        to: input.user.email,
+        recipientName: input.user.fullName,
+        title: input.title,
+        message: input.message,
+        caseLabel: input.caseLabel,
+        organizationName: input.organizationName,
+        teamName: input.teamName,
+        dashboardUrl,
+      })
+      .catch((err: Error) => {
+        this.logger.warn(`Case assignment email to ${input.user.email} failed: ${err.message}`);
+      });
+  }
+
+  private appPublicUrl(): string {
+    const configured = this.config.get<string>('appPublicUrl');
+    return (configured ?? 'http://localhost:3000').replace(/\/$/, '');
   }
 }

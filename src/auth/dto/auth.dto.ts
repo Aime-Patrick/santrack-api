@@ -36,3 +36,19 @@ export class ResetPasswordDto {
   @IsSantrackPassword()
   newPassword: string;
 }
+
+/** Self-service: confirm with current password before mailing the new inbox. */
+export class RequestEmailChangeDto {
+  @IsEmail({}, { message: 'A valid email address is required' })
+  email: string;
+
+  @IsString()
+  @MinLength(1, { message: 'Current password is required' })
+  password: string;
+}
+
+export class VerifyEmailChangeDto {
+  @IsString()
+  @MinLength(1, { message: 'Verification token is required' })
+  token: string;
+}

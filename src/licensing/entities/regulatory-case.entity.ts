@@ -15,6 +15,7 @@ import { Organization } from '../../organization/entities/organization.entity';
 import { ComplianceFinding } from './compliance-finding.entity';
 import { License } from './license.entity';
 import { RegulatoryAuthority } from './regulatory-authority.entity';
+import { RegulatoryTeam } from './regulatory-team.entity';
 
 export enum RegulatoryCaseStatus {
   OPEN = 'OPEN',
@@ -57,6 +58,7 @@ export enum RegulatoryCaseEventType {
 @Index('idx_regulatory_case_organization', ['organization'])
 @Index('idx_regulatory_case_assignee', ['assignedTo'])
 @Index('idx_regulatory_case_lead_authority', ['leadAuthority'])
+@Index('idx_regulatory_case_assigned_team', ['assignedTeamRef'])
 export class RegulatoryCase {
   @PrimaryGeneratedColumn()
   id: number;
@@ -78,9 +80,14 @@ export class RegulatoryCase {
   @Column({ name: 'case_category', type: 'varchar', length: 100, nullable: true })
   caseCategory: string | null;
 
-  /** Optional authority-defined team responsible before an officer is assigned. */
+  /** Denormalized team name for display; kept in sync with `assignedTeamRef`. */
   @Column({ name: 'assigned_team', type: 'varchar', length: 100, nullable: true })
   assignedTeam: string | null;
+
+  /** Canonical team desk for queues, leadership, and rename-safe assignment. */
+  @ManyToOne(() => RegulatoryTeam, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'assigned_team_id' })
+  assignedTeamRef: RegulatoryTeam | null;
 
   @ManyToOne(() => Facility, { nullable: true, eager: true })
   @JoinColumn({ name: 'facility_id' })

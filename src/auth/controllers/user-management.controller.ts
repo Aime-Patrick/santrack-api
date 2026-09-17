@@ -15,6 +15,7 @@ import { CurrentUser, RequireCapability } from '../../common/decorators';
 import { User } from '../entities/user.entity';
 import {
   CreateUserDto,
+  RequestUserEmailChangeDto,
   ResetPasswordDto,
   SetUserCapabilitiesDto,
   UpdateUserDto,
@@ -75,6 +76,20 @@ export class UserController {
     @Body() dto: UpdateUserDto,
   ) {
     return this.userMgmt.update(actor, id, dto);
+  }
+
+  /**
+   * Request an email change for a user. Current address stays until the new
+   * inbox confirms (short-lived link).
+   */
+  @Post(':id/email-change')
+  @RequireCapability(Capability.MANAGE_USERS)
+  async requestEmailChange(
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: RequestUserEmailChangeDto,
+  ) {
+    return this.userMgmt.requestEmailChange(actor, id, dto.email);
   }
 
   /**

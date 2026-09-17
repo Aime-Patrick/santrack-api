@@ -15,6 +15,10 @@ import {
 import { RegulatoryInspection } from '../licensing/entities/regulatory-inspection.entity';
 import { PublicComplaint } from '../licensing/entities/public-complaint.entity';
 import { RegulatoryAuthority } from '../licensing/entities/regulatory-authority.entity';
+import {
+  RegulatoryTeam,
+  RegulatoryTeamMember,
+} from '../licensing/entities/regulatory-team.entity';
 import { RegulatoryOversightScope } from '../licensing/entities/regulatory-oversight.entity';
 import {
   License,
@@ -139,6 +143,8 @@ export const ENTITIES = [
   RegulatoryInspection,
   PublicComplaint,
   RegulatoryAuthority,
+  RegulatoryTeam,
+  RegulatoryTeamMember,
   RegulatoryOversightScope,
   ProductionEligibilityDecision,
   RawMaterial,

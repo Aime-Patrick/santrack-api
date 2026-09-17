@@ -31,9 +31,19 @@ export class RegulatoryCaseController {
     @CurrentUser() actor: User,
     @Query('status') status?: RegulatoryCaseStatus,
     @Query('assignedToId', new ParseIntPipe({ optional: true })) assignedToId?: number,
+    @Query('scope') scope?: 'all' | 'mine' | 'team',
   ) {
     requireRegulator(organization, actor);
-    return (await this.cases.listForAuthority(await this.authorities.forOperator(organization!), status, assignedToId)).map(describe);
+    const safeScope = scope === 'mine' || scope === 'team' ? scope : 'all';
+    return (
+      await this.cases.listForAuthority(
+        await this.authorities.forOperator(organization!),
+        status,
+        assignedToId,
+        safeScope,
+        actor.id,
+      )
+    ).map(describe);
   }
 
   @Post()
@@ -82,17 +92,23 @@ export class RegulatoryCaseController {
   }
 
   @Post(':id/assign')
-  @RequireCapability(Capability.OVERSEE_INDUSTRIES)
+  @RequireCapability(Capability.VIEW_OPERATIONS)
   async assign(@Param('id', ParseIntPipe) id: number, @ActingOrg() organization: Organization, @CurrentUser() actor: User, @Body() dto: AssignRegulatoryCaseDto) {
     requireRegulator(organization, actor);
     return describe(await this.cases.assign(id, actor, await this.authorities.forOperator(organization), dto.officerId, dto.note));
   }
 
   @Post(':id/team')
-  @RequireCapability(Capability.OVERSEE_INDUSTRIES)
+  @RequireCapability(Capability.VIEW_OPERATIONS)
   async assignTeam(@Param('id', ParseIntPipe) id: number, @ActingOrg() organization: Organization, @CurrentUser() actor: User, @Body() dto: AssignRegulatoryCaseTeamDto) {
     requireRegulator(organization, actor);
-    return describe(await this.cases.assignTeam(id, actor, await this.authorities.forOperator(organization), dto.team));
+    if (dto.teamId == null && !dto.team?.trim()) {
+      throw new TraceabilityRuleException('Choose a team configured by your authority');
+    }
+    return describe(await this.cases.assignTeam(id, actor, await this.authorities.forOperator(organization), {
+      teamId: dto.teamId,
+      team: dto.team,
+    }));
   }
 
   @Post(':id/status')
@@ -149,7 +165,9 @@ function requireRegulator(organization: Organization | null, actor: User): void 
 function describe(caseRecord: RegulatoryCase) {
   return {
     id: caseRecord.id, caseNumber: caseRecord.caseNumber, title: caseRecord.title,
-    description: caseRecord.description, priority: caseRecord.priority, status: caseRecord.status, caseCategory: caseRecord.caseCategory, assignedTeam: caseRecord.assignedTeam,
+    description: caseRecord.description, priority: caseRecord.priority, status: caseRecord.status, caseCategory: caseRecord.caseCategory,
+    assignedTeam: caseRecord.assignedTeamRef?.name ?? caseRecord.assignedTeam,
+    assignedTeamId: caseRecord.assignedTeamRef?.id ?? null,
     dueOn: caseRecord.dueOn, openedAt: caseRecord.openedAt,
     organization: { id: caseRecord.organization.id, name: caseRecord.organization.name },
     leadAuthority: caseRecord.leadAuthority ? { id: caseRecord.leadAuthority.id, code: caseRecord.leadAuthority.code, name: caseRecord.leadAuthority.name } : null,

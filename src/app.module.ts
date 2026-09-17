@@ -205,12 +205,14 @@ import { RegulatoryOversightController } from './licensing/controllers/regulator
 import { LicenseService } from './licensing/services/license.service';
 import { RegulatoryCaseService } from './licensing/services/regulatory-case.service';
 import { RegulatoryCaseDeadlineService } from './licensing/services/regulatory-case-deadline.service';
+import { RegulatoryWorkloadDigestService } from './licensing/services/regulatory-workload-digest.service';
 import { RegulatoryInvestigationPackService } from './licensing/services/regulatory-investigation-pack.service';
 import { RegulatoryInspectionService } from './licensing/services/regulatory-inspection.service';
 import { PublicComplaintService } from './licensing/services/public-complaint.service';
 import { RegulatorySignalService } from './licensing/services/regulatory-signal.service';
 import { RegulatoryCommandService } from './licensing/services/regulatory-command.service';
 import { RegulatoryAuthorityService } from './licensing/services/regulatory-authority.service';
+import { RegulatoryTeamService } from './licensing/services/regulatory-team.service';
 import { RegulatoryOversightService } from './licensing/services/regulatory-oversight.service';
 import { RegulatoryAuthority } from './licensing/entities/regulatory-authority.entity';
 import { SequenceService } from './common/sequence.service';
@@ -437,12 +439,14 @@ import { SearchService } from './search/search.service';
     LicenseService,
     RegulatoryCaseService,
     RegulatoryCaseDeadlineService,
+    RegulatoryWorkloadDigestService,
     RegulatoryInvestigationPackService,
     RegulatoryInspectionService,
     PublicComplaintService,
     RegulatorySignalService,
     RegulatoryCommandService,
     RegulatoryAuthorityService,
+    RegulatoryTeamService,
     RegulatoryAccountabilityService,
     RegulatoryOversightService,
     LicenseEnforcementService,

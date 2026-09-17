@@ -38,6 +38,7 @@ import {
   LicenseEvent,
 } from '../entities/license.entity';
 import { LicenseFollowUp } from '../entities/license-followup.entity';
+import { RegulatoryAuthority } from '../entities/regulatory-authority.entity';
 import {
   LicensedActivity,
   LicenseEventType,
@@ -84,6 +85,8 @@ export class LicenseService {
     private readonly documents: Repository<LicenseDocument>,
     @InjectRepository(LicenseFollowUp)
     private readonly followUps: Repository<LicenseFollowUp>,
+    @InjectRepository(RegulatoryAuthority)
+    private readonly authorities: Repository<RegulatoryAuthority>,
     private readonly sequences: SequenceService,
     @Inject(STORAGE_PROVIDER)
     private readonly storage: StorageProvider,
@@ -386,20 +389,40 @@ export class LicenseService {
 
   // ------------------------------------------------------------ regulator
 
-  /** Applications waiting on this regulator. */
+  /** Applications waiting on this regulator, scoped to the authority's mandates. */
   async queue(regulator: Organization): Promise<License[]> {
-    // The queue spans every applicant on the platform, so it is regulator-only
-    // for the same reason the decision routes are. It previously took no
-    // organization at all, which left the pending applications of every
-    // business readable by any signed-in account.
+    // The queue spans applicants whose industry sector matches this authority's
+    // mandate. Without mandates configured, the desk still sees every pending
+    // application so an unconfigured authority is not empty by accident.
     requireRegulator(regulator);
 
-    return this.licenses.find({
-      where: {
-        status: In([LicenseStatus.SUBMITTED, LicenseStatus.UNDER_REVIEW]),
-      },
-      order: { createdAt: 'ASC' },
+    const authority = await this.authorities.findOne({
+      where: { operatingOrganization: { id: regulator.id }, isActive: true },
     });
+    const mandates = (authority?.mandates ?? [])
+      .map((m) => m.trim())
+      .filter(Boolean);
+
+    const qb = this.licenses
+      .createQueryBuilder('license')
+      .leftJoinAndSelect('license.organization', 'organization')
+      .leftJoinAndSelect('license.category', 'category')
+      .leftJoinAndSelect('license.facility', 'facility')
+      .leftJoinAndSelect('license.issuedBy', 'issuedBy')
+      .leftJoinAndSelect('license.reviewedBy', 'reviewedBy')
+      .where('license.status IN (:...statuses)', {
+        statuses: [LicenseStatus.SUBMITTED, LicenseStatus.UNDER_REVIEW],
+      })
+      .orderBy('license.createdAt', 'ASC');
+
+    if (mandates.length > 0) {
+      qb.andWhere(
+        '(organization.industry_sector IN (:...mandates) OR organization.industry_sector IS NULL)',
+        { mandates },
+      );
+    }
+
+    return qb.getMany();
   }
 
   /** Claims an application, so two reviewers do not screen the same one. */

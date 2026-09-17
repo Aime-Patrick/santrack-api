@@ -48,6 +48,10 @@ export class OpenRegulatoryCaseDto {
   @IsString()
   @MaxLength(100)
   assignedTeam?: string;
+
+  @IsOptional()
+  @IsInt()
+  assignedTeamId?: number;
 }
 
 export class AssignRegulatoryCaseDto {
@@ -61,10 +65,17 @@ export class AssignRegulatoryCaseDto {
 }
 
 export class AssignRegulatoryCaseTeamDto {
+  /** Prefer team id when the authority has Team rows. */
+  @IsOptional()
+  @IsInt()
+  teamId?: number;
+
+  /** Legacy / display name; resolved against active teams for the authority. */
+  @IsOptional()
   @IsString()
   @MinLength(2)
   @MaxLength(100)
-  team: string;
+  team?: string;
 }
 
 export class ChangeRegulatoryCaseStatusDto {

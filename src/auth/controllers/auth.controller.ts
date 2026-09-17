@@ -24,8 +24,10 @@ import { ChangePasswordDto } from '../dto/user-management.dto';
 import {
   LoginDto,
   RegisterDto,
+  RequestEmailChangeDto,
   RequestPasswordResetDto,
   ResetPasswordDto,
+  VerifyEmailChangeDto,
 } from '../dto/auth.dto';
 import {
   clearSessionCookie,
@@ -201,6 +203,30 @@ export class AuthController {
     @Body() dto: UpdateProfileDto,
   ) {
     return this.auth.updateProfile(user, dto);
+  }
+
+  @Post('me/email-change')
+  @HttpCode(200)
+  @RateLimit('email-change', 5, 60 * 60 * 1000)
+  async requestEmailChange(
+    @CurrentUser() user: User,
+    @Body() dto: RequestEmailChangeDto,
+  ) {
+    return this.auth.requestEmailChange(user, dto);
+  }
+
+  @Delete('me/email-change')
+  @HttpCode(200)
+  async cancelEmailChange(@CurrentUser() user: User) {
+    return this.auth.cancelEmailChange(user);
+  }
+
+  @Post('verify-email-change')
+  @Public()
+  @HttpCode(200)
+  @RateLimit('verify-email-change', 20, 60 * 60 * 1000)
+  async verifyEmailChange(@Body() dto: VerifyEmailChangeDto) {
+    return this.auth.verifyEmailChange(dto.token);
   }
 
   @Patch('me/avatar')

@@ -21,10 +21,6 @@ export class RegulatoryAuthority {
   @Column({ name: 'case_categories', type: 'jsonb', default: () => "'[]'::jsonb" })
   caseCategories: string[];
 
-  /** Authority-defined operational teams; no geographic model is assumed. */
-  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
-  teams: string[];
-
   /** Optional authority-owned target for accepting or declining a referral. */
   @Column({ name: 'referral_response_days', type: 'integer', nullable: true })
   referralResponseDays: number | null;

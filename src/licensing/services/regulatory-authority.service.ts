@@ -69,7 +69,7 @@ export class RegulatoryAuthorityService {
     if (existing) throw new TraceabilityRuleException(`Authority ${code} already exists`);
     return this.authorities.save(this.authorities.create({
       code, name: organization.name, operatingOrganization: organization,
-      mandates: [], caseCategories: [], teams: [],
+      mandates: [], caseCategories: [],
       referralResponseDays: null,
     }));
   }
@@ -96,7 +96,6 @@ export class RegulatoryAuthorityService {
         operatingOrganization: organization,
         mandates: [],
         caseCategories: [],
-        teams: [],
         referralResponseDays: null,
       }));
     } else if (authority.code !== code) {
@@ -174,7 +173,8 @@ export class RegulatoryAuthorityService {
     const authority = await this.forOrganization(organization);
     if (dto.mandates) authority.mandates = normalize(dto.mandates);
     if (dto.caseCategories) authority.caseCategories = normalize(dto.caseCategories);
-    if (dto.teams) authority.teams = normalize(dto.teams);
+    // `teams` on this DTO is legacy — RegulatoryTeamService.replaceNamesFromLegacy
+    // is the write path (called from the controller). Do not persist a jsonb mirror.
     if (dto.referralResponseDays !== undefined) authority.referralResponseDays = dto.referralResponseDays;
     return this.authorities.save(authority);
   }

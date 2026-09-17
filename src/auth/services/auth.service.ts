@@ -59,6 +59,8 @@ export interface AuthResult {
   user: {
     id: number;
     email: string;
+    pendingEmail: string | null;
+    pendingEmailExpiresAt: string | null;
     fullName: string | null;
     role: UserRole;
     organization: {
@@ -82,6 +84,10 @@ export interface AuthResult {
     capabilities: Capability[];
   };
 }
+
+/** Email stays on the current address until the new inbox confirms (30 min). */
+const EMAIL_CHANGE_TTL_MS = 30 * 60 * 1000;
+const EMAIL_CHANGE_EXPIRES_LABEL = '30 minutes';
 
 export interface MfaChallengeResult {
   mfaRequired: true;
@@ -427,6 +433,170 @@ export class AuthService {
   }
 
   /**
+   * Self-service email change. Current address stays until the new inbox
+   * confirms via a short-lived link. Password required to start the change.
+   */
+  async requestEmailChange(
+    actor: User,
+    dto: { email: string; password: string },
+  ): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      select: {
+        id: true,
+        email: true,
+        passwordHash: true,
+        fullName: true,
+        pendingEmail: true,
+        emailChangeExpiresAt: true,
+        role: true,
+        mfaEnabled: true,
+        mustChangePassword: true,
+        avatarUrl: true,
+        avatarKey: true,
+        extraCapabilities: true,
+      },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+
+    const passwordOk = await compare(dto.password, user.passwordHash);
+    if (!passwordOk) {
+      throw new TraceabilityRuleException('Current password is incorrect');
+    }
+
+    return this.beginEmailChange(user, dto.email);
+  }
+
+  /**
+   * Start (or replace) a pending email change for any loaded user row.
+   * Used by self-service and by org admins.
+   */
+  async beginEmailChange(user: User, rawEmail: string): Promise<AuthResult['user']> {
+    const newEmail = rawEmail.trim().toLowerCase();
+    if (!newEmail) {
+      throw new TraceabilityRuleException('A valid email address is required');
+    }
+    if (newEmail === user.email.trim().toLowerCase()) {
+      throw new TraceabilityRuleException('That is already the current email');
+    }
+
+    const taken = await this.users.findOne({ where: { email: newEmail } });
+    if (taken && taken.id !== user.id) {
+      throw new DuplicateException(`${newEmail} is already registered`);
+    }
+
+    const pendingClash = await this.users
+      .createQueryBuilder('u')
+      .where('LOWER(u.pending_email) = :email', { email: newEmail })
+      .andWhere('u.id != :id', { id: user.id })
+      .andWhere('u.email_change_expires_at > :now', { now: new Date() })
+      .getOne();
+    if (pendingClash) {
+      throw new TraceabilityRuleException(
+        'That email is already pending verification on another account',
+      );
+    }
+
+    const token = randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
+    user.pendingEmail = newEmail;
+    user.emailChangeToken = this.hashResetToken(token);
+    user.emailChangeExpiresAt = expiresAt;
+    await this.users.save(user);
+
+    const baseUrl = this.appPublicUrl;
+    void this.email
+      .sendEmailChangeVerify({
+        to: newEmail,
+        name: user.fullName,
+        pendingEmail: newEmail,
+        token,
+        baseUrl,
+        expiresIn: EMAIL_CHANGE_EXPIRES_LABEL,
+      })
+      .catch((error: Error) =>
+        this.logger.warn(
+          `Email-change verify to ${newEmail} failed: ${error.message}`,
+        ),
+      );
+    void this.email
+      .sendEmailChangeNotice({
+        to: user.email,
+        name: user.fullName,
+        pendingEmail: newEmail,
+        expiresIn: EMAIL_CHANGE_EXPIRES_LABEL,
+      })
+      .catch((error: Error) =>
+        this.logger.warn(
+          `Email-change notice to ${user.email} failed: ${error.message}`,
+        ),
+      );
+
+    const refreshed = await this.users.findOne({
+      where: { id: user.id },
+      relations: { organization: true },
+    });
+    return this.describe(refreshed ?? user);
+  }
+
+  async cancelEmailChange(actor: User): Promise<AuthResult['user']> {
+    const user = await this.users.findOne({
+      where: { id: actor.id },
+      relations: { organization: true },
+    });
+    if (!user) throw new InvalidCredentialsException();
+    user.pendingEmail = null;
+    user.emailChangeToken = null;
+    user.emailChangeExpiresAt = null;
+    await this.users.save(user);
+    return this.describe(user);
+  }
+
+  async verifyEmailChange(token: string): Promise<{ success: true; email: string }> {
+    const user = await this.users.findOne({
+      where: { emailChangeToken: this.hashResetToken(token) },
+      select: {
+        id: true,
+        email: true,
+        pendingEmail: true,
+        emailChangeToken: true,
+        emailChangeExpiresAt: true,
+      },
+    });
+
+    if (
+      !user ||
+      !user.pendingEmail ||
+      !user.emailChangeExpiresAt ||
+      user.emailChangeExpiresAt.getTime() <= Date.now()
+    ) {
+      throw new TraceabilityRuleException(
+        'This verification link is invalid or has expired. Request a new email change.',
+      );
+    }
+
+    const clash = await this.users.findOne({ where: { email: user.pendingEmail } });
+    if (clash && clash.id !== user.id) {
+      const contested = user.pendingEmail;
+      user.pendingEmail = null;
+      user.emailChangeToken = null;
+      user.emailChangeExpiresAt = null;
+      await this.users.save(user);
+      throw new DuplicateException(`${contested} is already registered`);
+    }
+
+    const nextEmail = user.pendingEmail;
+    user.email = nextEmail;
+    user.pendingEmail = null;
+    user.emailChangeToken = null;
+    user.emailChangeExpiresAt = null;
+    await this.users.save(user);
+
+    return { success: true, email: nextEmail };
+  }
+
+  /**
    * Pick a DiceBear library avatar (or clear with null). Replaces any upload.
    */
   async setLibraryAvatar(
@@ -637,9 +807,18 @@ export class AuthService {
 
   private describe(user: User): AuthResult['user'] {
     const mfaEnabled = !!user.mfaEnabled;
+    const pendingStillValid =
+      !!user.pendingEmail &&
+      !!user.emailChangeExpiresAt &&
+      user.emailChangeExpiresAt.getTime() > Date.now();
     return {
       id: user.id,
       email: user.email,
+      pendingEmail: pendingStillValid ? user.pendingEmail : null,
+      pendingEmailExpiresAt:
+        pendingStillValid && user.emailChangeExpiresAt
+          ? user.emailChangeExpiresAt.toISOString()
+          : null,
       fullName: user.fullName,
       role: user.role,
       organization: user.organization

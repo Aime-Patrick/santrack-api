@@ -28,6 +28,7 @@ import { EmployeeStatus } from './payroll/payroll.enums';
 import { LicenseCategory, License } from './licensing/entities/license.entity';
 import { LicensedActivity, LicenseStatus } from './licensing/licensing.enums';
 import { RegulatoryAuthority } from './licensing/entities/regulatory-authority.entity';
+import { RegulatoryTeam } from './licensing/entities/regulatory-team.entity';
 
 const ds = new DataSource(dataSourceOptions);
 
@@ -51,6 +52,7 @@ async function seed() {
   const licenseCategoryRepo = ds.getRepository(LicenseCategory);
   const licenseRepo = ds.getRepository(License);
   const authorityRepo = ds.getRepository(RegulatoryAuthority);
+  const teamRepo = ds.getRepository(RegulatoryTeam);
 
   // ─── Organizations ───
   console.log('--- Organizations ---');
@@ -404,16 +406,18 @@ async function seed() {
   // so it acts as the final fallback when no specialist authority matches.
   const rbsaOrg = orgs['Rwanda Business Standards Agency'];
   if (!(await exists(authorityRepo, { code: 'RBSA' }))) {
-    await authorityRepo.save(authorityRepo.create({
+    const rbsa = await authorityRepo.save(authorityRepo.create({
       code: 'RBSA',
       name: 'Rwanda Business Standards Agency',
       operatingOrganization: rbsaOrg,
       isActive: true,
       mandates: Object.values(IndustrySector),
       caseCategories: ['REGISTRATION', 'LICENCE', 'INSPECTION', 'RECALL', 'COMPLAINT'],
-      teams: ['Registration', 'Licensing', 'Enforcement', 'Inspections'],
       referralResponseDays: 14,
     }));
+    for (const name of ['Registration', 'Licensing', 'Enforcement', 'Inspections']) {
+      await teamRepo.save(teamRepo.create({ authority: rbsa, name, active: true }));
+    }
     console.log('  Created authority: RBSA (Rwanda Business Standards Agency)');
   } else {
     console.log('  Skipped authority: RBSA (exists)');
@@ -424,7 +428,7 @@ async function seed() {
   // instead of to RBSA.
   const fdaOrg = orgs['Rwanda Food & Drugs Authority'];
   if (!(await exists(authorityRepo, { code: 'RFDA' }))) {
-    await authorityRepo.save(authorityRepo.create({
+    const rfda = await authorityRepo.save(authorityRepo.create({
       code: 'RFDA',
       name: 'Rwanda Food & Drugs Authority',
       operatingOrganization: fdaOrg,
@@ -435,9 +439,11 @@ async function seed() {
         IndustrySector.COSMETICS,
       ],
       caseCategories: ['DRUG_SAFETY', 'FOOD_RECALL', 'LABELLING', 'ADVERSE_EVENT', 'INSPECTION'],
-      teams: ['Drug Regulation', 'Food Safety', 'Cosmetics', 'Pharmacovigilance'],
       referralResponseDays: 10,
     }));
+    for (const name of ['Drug Regulation', 'Food Safety', 'Cosmetics', 'Pharmacovigilance']) {
+      await teamRepo.save(teamRepo.create({ authority: rfda, name, active: true }));
+    }
     console.log('  Created authority: RFDA (Rwanda Food & Drugs Authority)');
   } else {
     console.log('  Skipped authority: RFDA (exists)');

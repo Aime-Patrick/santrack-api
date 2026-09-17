@@ -14,6 +14,7 @@ import {
   RegulatoryCasePriority,
   RegulatoryCaseStatus,
 } from '../entities/regulatory-case.entity';
+import { RegulatoryTeamService } from './regulatory-team.service';
 
 export interface RegulatoryCaseDeadlineResult {
   overdue: number;
@@ -37,6 +38,7 @@ export class RegulatoryCaseDeadlineService {
     @InjectRepository(User)
     private readonly users: Repository<User>,
     private readonly notifications: NotificationsGateway,
+    private readonly teams: RegulatoryTeamService,
   ) {}
 
   @Cron(CronExpression.EVERY_DAY_AT_8AM, {
@@ -54,6 +56,10 @@ export class RegulatoryCaseDeadlineService {
       where: {
         dueOn: LessThan(today()) as unknown as string,
         status: Not(In([RegulatoryCaseStatus.CLOSED, RegulatoryCaseStatus.RESOLVED])),
+      },
+      relations: {
+        assignedTo: { organization: true },
+        leadAuthority: { operatingOrganization: true },
       },
       take: 500,
       order: { dueOn: 'ASC' },
@@ -74,7 +80,14 @@ export class RegulatoryCaseDeadlineService {
 
   private async markOnce(caseId: number): Promise<{ caseRecord: RegulatoryCase; escalated: boolean } | null> {
     return this.dataSource.transaction(async (manager) => {
-      const caseRecord = await manager.findOne(RegulatoryCase, { where: { id: caseId } });
+      const caseRecord = await manager.findOne(RegulatoryCase, {
+        where: { id: caseId },
+        relations: {
+          assignedTo: { organization: true },
+          assignedTeamRef: true,
+          leadAuthority: { operatingOrganization: true },
+        },
+      });
       if (!caseRecord || !caseRecord.dueOn || caseRecord.dueOn >= today() || [RegulatoryCaseStatus.CLOSED, RegulatoryCaseStatus.RESOLVED].includes(caseRecord.status)) {
         return null;
       }
@@ -104,21 +117,37 @@ export class RegulatoryCaseDeadlineService {
   }
 
   private async notify(caseRecord: RegulatoryCase, escalated: boolean): Promise<number> {
-    const authorityId = caseRecord.assignedTo?.organization?.id;
+    const authorityOrgId =
+      caseRecord.leadAuthority?.operatingOrganization?.id ??
+      caseRecord.assignedTo?.organization?.id;
     // A recall can be opened by the affected business. Until it is assigned to
     // a regulator, platform administrators are the only safe supervisory
     // fallback; the affected business must never receive a regulator alert.
-    const supervisors = authorityId
+    const supervisors = authorityOrgId
       ? await this.users.find({
           where: [
-            { organization: { id: authorityId }, role: UserRole.ORG_ADMIN },
-            { organization: { id: authorityId }, role: UserRole.MANAGEMENT },
+            { organization: { id: authorityOrgId }, role: UserRole.ORG_ADMIN },
+            { organization: { id: authorityOrgId }, role: UserRole.MANAGEMENT },
           ],
         })
       : await this.users.find({ where: { role: UserRole.SYSTEM_ADMIN } });
     const recipients = new Map<number, User>();
     if (caseRecord.assignedTo) recipients.set(caseRecord.assignedTo.id, caseRecord.assignedTo);
     for (const supervisor of supervisors) recipients.set(supervisor.id, supervisor);
+
+    if (caseRecord.assignedTeamRef?.id && caseRecord.leadAuthority?.id) {
+      const leaders = await this.teams.leadersForTeamId(
+        caseRecord.leadAuthority.id,
+        caseRecord.assignedTeamRef.id,
+      );
+      for (const leader of leaders) recipients.set(leader.id, leader);
+    } else if (caseRecord.assignedTeam && caseRecord.leadAuthority?.id) {
+      const leaders = await this.teams.leadersForTeamName(
+        caseRecord.leadAuthority.id,
+        caseRecord.assignedTeam,
+      );
+      for (const leader of leaders) recipients.set(leader.id, leader);
+    }
 
     let notified = 0;
     for (const recipient of recipients.values()) {

@@ -56,6 +56,12 @@ export class UpdateUserDto {
   organizationId?: number;
 }
 
+/** Admin-initiated email change — new address must still verify the inbox. */
+export class RequestUserEmailChangeDto {
+  @IsEmail({}, { message: 'A valid email address is required' })
+  email: string;
+}
+
 export class ResetPasswordDto {
   @IsString()
   @IsSantrackPassword()

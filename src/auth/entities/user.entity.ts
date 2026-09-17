@@ -52,6 +52,25 @@ export class User {
   })
   passwordResetExpiresAt: Date | null;
 
+  /**
+   * New email awaiting confirmation. Current `email` stays authoritative until
+   * the change token is verified.
+   */
+  @Column({ name: 'pending_email', type: 'varchar', nullable: true })
+  pendingEmail: string | null;
+
+  /** SHA-256 of the single-use email-change token. */
+  @Column({ name: 'email_change_token', type: 'varchar', nullable: true, select: false })
+  emailChangeToken: string | null;
+
+  /** When `emailChangeToken` stops being accepted (short-lived). */
+  @Column({
+    name: 'email_change_expires_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  emailChangeExpiresAt: Date | null;
+
   /** Whether TOTP MFA is active for this account. */
   @Column({ name: 'mfa_enabled', type: 'boolean', default: false })
   mfaEnabled: boolean;

@@ -67,6 +67,50 @@ export class EmailService {
     });
   }
 
+  /** Confirm a pending email change on the new inbox. */
+  async sendEmailChangeVerify(input: {
+    to: string;
+    name: string | null;
+    pendingEmail: string;
+    token: string;
+    baseUrl: string;
+    expiresIn: string;
+  }): Promise<void> {
+    const verificationUrl = `${input.baseUrl}/verify-email-change?token=${input.token}`;
+    await this.send({
+      to: input.to,
+      subject: 'Confirm your new email — SANTRACK',
+      template: 'change-email-verify',
+      data: {
+        title: 'Confirm your new email',
+        name: input.name ?? '',
+        pendingEmail: input.pendingEmail,
+        verificationUrl,
+        expiresIn: input.expiresIn,
+      },
+    });
+  }
+
+  /** Notify the current inbox that a change was requested. */
+  async sendEmailChangeNotice(input: {
+    to: string;
+    name: string | null;
+    pendingEmail: string;
+    expiresIn: string;
+  }): Promise<void> {
+    await this.send({
+      to: input.to,
+      subject: 'Email change requested — SANTRACK',
+      template: 'change-email-notice',
+      data: {
+        title: 'Email change requested',
+        name: input.name ?? '',
+        pendingEmail: input.pendingEmail,
+        expiresIn: input.expiresIn,
+      },
+    });
+  }
+
   async sendResetPasswordEmail(to: string, token: string, baseUrl: string): Promise<void> {
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
     await this.send({
@@ -345,6 +389,56 @@ export class EmailService {
         title: 'Account removed',
         greeting,
         orgLine,
+      },
+    });
+  }
+
+  /** Case assigned to an officer or team — pairs with in-app notification. */
+  async sendCaseAssignment(params: {
+    to: string;
+    recipientName: string | null;
+    title: string;
+    message: string;
+    caseLabel: string;
+    organizationName: string;
+    teamName?: string | null;
+    dashboardUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: params.title,
+      template: 'case-assignment',
+      data: {
+        title: params.title,
+        recipientName: params.recipientName ?? params.to,
+        message: params.message,
+        caseLabel: params.caseLabel,
+        organizationName: params.organizationName,
+        teamName: params.teamName ?? '',
+        dashboardUrl: params.dashboardUrl,
+      },
+    });
+  }
+
+  /** Daily / weekly workload rollup for leaders and overseers. */
+  async sendWorkloadDigest(params: {
+    to: string;
+    recipientName: string | null;
+    title: string;
+    periodLabel: string;
+    summaryLines: string[];
+    dashboardUrl: string;
+  }): Promise<void> {
+    await this.send({
+      to: params.to,
+      subject: params.title,
+      template: 'workload-digest',
+      data: {
+        title: params.title,
+        recipientName: params.recipientName ?? params.to,
+        periodLabel: params.periodLabel,
+        summaryLines: params.summaryLines,
+        dashboardUrl: params.dashboardUrl,
       },
     });
   }

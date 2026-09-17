@@ -22,6 +22,7 @@ import {
 import { DYNAMICALLY_GRANTABLE_CAPABILITIES } from '../capabilities';
 import { User } from '../entities/user.entity';
 import { UserRole } from '../user-role.enum';
+import { AuthService } from './auth.service';
 
 export type CreatedUserResult = Omit<User, 'passwordHash'> & {
   /** Present only when the server generated the temporary password. */
@@ -42,6 +43,7 @@ export class UserManagementService {
     private readonly organizations: Repository<Organization>,
     private readonly email: EmailService,
     private readonly config: ConfigService,
+    private readonly auth: AuthService,
   ) {}
 
   /**
@@ -201,6 +203,32 @@ export class UserManagementService {
 
     const saved = await this.users.save(user);
     return this.describe(saved);
+  }
+
+  /**
+   * Start an email change for another user. The new inbox must confirm;
+   * the current address stays until then.
+   */
+  async requestEmailChange(
+    actor: User,
+    userId: number,
+    email: string,
+  ): Promise<Omit<User, 'passwordHash'>> {
+    const user = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
+    if (!user) {
+      throw new NotFoundEntityException('User', userId);
+    }
+    this.requireVisible(actor, user);
+    await this.auth.beginEmailChange(user, email);
+    const refreshed = await this.users.findOne({
+      where: { id: userId },
+      relations: { organization: true },
+    });
+    if (!refreshed) throw new NotFoundEntityException('User', userId);
+    return this.describe(refreshed);
   }
 
   /**
@@ -403,8 +431,20 @@ export class UserManagementService {
   }
 
   private describe(user: User): Omit<User, 'passwordHash'> {
-    const { passwordHash: _, ...rest } = user as User & { passwordHash: string };
-    return rest;
+    const {
+      passwordHash: _password,
+      emailChangeToken: _token,
+      ...rest
+    } = user as User & { passwordHash?: string; emailChangeToken?: string };
+    const pendingStillValid =
+      !!rest.pendingEmail &&
+      !!rest.emailChangeExpiresAt &&
+      rest.emailChangeExpiresAt.getTime() > Date.now();
+    if (!pendingStillValid) {
+      rest.pendingEmail = null;
+      rest.emailChangeExpiresAt = null;
+    }
+    return { ...rest, emailChangeToken: null };
   }
 
   private appPublicUrl(): string {
