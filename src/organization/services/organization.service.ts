@@ -67,6 +67,8 @@ export interface RegistryEntry {
     categoryCode?: string;
     categoryName?: string;
     status: string;
+    statusReason?: string | null;
+    statusChangedAt?: string | Date | null;
     issuedOn?: string | null;
     expiresOn: string | Date | null;
     issuedByOrgId: number | null;
@@ -181,8 +183,7 @@ export class OrganizationService {
       type: NotificationType.INFO,
       title: 'Registration submitted',
       message:
-        `${organization.name} is registered and waiting for a regulator to ` +
-        'review it. You will be notified by email once a decision is made.',
+        `${organization.name} is with the regulator. You will be notified when they approve it, request changes, or reject it.`,
       module: 'compliance',
       actionUrl: '/dashboard',
     });
@@ -298,12 +299,17 @@ export class OrganizationService {
     organization.reviewNote = null;
     const saved = await this.organizations.save(organization);
 
+    void this.routeToAuthority(saved).catch((err: Error) =>
+      this.logger.warn(
+        `Sector routing for resubmitted ${saved.name} failed silently: ${err.message}`,
+      ),
+    );
+
     await this.notifications.sendToUser(actor.id, {
       type: NotificationType.INFO,
       title: 'Registration resubmitted',
       message:
-        `${organization.name} has been resubmitted for review. ` +
-        'You will be notified once a decision is made.',
+        `${organization.name} is back with the regulator. You will be notified when they decide.`,
       module: 'compliance',
       actionUrl: '/dashboard',
     });
@@ -319,16 +325,16 @@ export class OrganizationService {
     await Promise.allSettled(
       staff.map((user) =>
         this.notifications.sendToUser(user.id, {
-          type: NotificationType.INFO,
-          title: 'New registration application',
+          type: NotificationType.WARNING,
+          title: 'Registration to review',
           message:
-            `${organization.name} has submitted a registration application` +
+            `${organization.name} has applied` +
             (organization.industrySector
               ? ` in the ${organization.industrySector.replace(/_/g, ' ').toLowerCase()} sector`
               : '') +
-            '. Review it from the pending registrations queue.',
+            '. Open the pending queue to approve, request changes, or reject.',
           module: 'compliance',
-          actionUrl: '/dashboard/regulator',
+          actionUrl: '/dashboard/regulator?tab=registrations',
         }),
       ),
     );
@@ -359,7 +365,7 @@ export class OrganizationService {
           await this.notifications.sendToUser(user.id, {
             type: NotificationType.SUCCESS,
             title: 'Registration approved',
-            message: `${organization.name} is approved. Your operating licence is active and you can now work on the platform.`,
+            message: `${organization.name} is approved. Your operating licence is active — open the dashboard to start work.`,
             module: 'compliance',
             actionUrl: '/dashboard',
           });
@@ -381,8 +387,7 @@ export class OrganizationService {
             type: NotificationType.WARNING,
             title: 'Changes requested on your registration',
             message:
-              `A regulator has reviewed ${organization.name}'s registration and ` +
-              `needs some changes before approval. Sign in to see what's required.`,
+              `A regulator needs changes before ${organization.name} can be approved. Sign in to see what to fix, then resubmit.`,
             module: 'compliance',
             actionUrl: '/dashboard',
           });
@@ -406,7 +411,7 @@ export class OrganizationService {
             title: 'Registration rejected',
             message:
               `${organization.name}'s registration was rejected: ` +
-              `${organization.rejectionReason ?? 'no reason given'}.`,
+              `${organization.rejectionReason ?? 'no reason given'}. Review the decision from your dashboard.`,
             module: 'compliance',
             actionUrl: '/dashboard',
           });
@@ -541,6 +546,8 @@ export class OrganizationService {
             categoryCode: license.category?.code,
             categoryName: license.category?.name,
             status: license.status,
+            statusReason: license.statusReason,
+            statusChangedAt: license.statusChangedAt,
             issuedOn: license.issuedOn,
             expiresOn: license.expiresOn,
             issuedByOrgId: license.issuedBy?.id ?? null,
@@ -981,9 +988,9 @@ export class OrganizationService {
         await this.notifications.sendToUser(user.id, {
           type: NotificationType.INFO,
           title: 'Applicant responded to information request',
-          message: `${req.organization.name} has submitted the requested information for their registration.`,
+          message: `${req.organization.name} submitted the requested information. Open the registrations queue to continue the review.`,
           module: 'compliance',
-          actionUrl: '/dashboard/regulator',
+          actionUrl: '/dashboard/regulator?tab=registrations',
         });
 
         if (user.email) {
@@ -1059,7 +1066,7 @@ export class OrganizationService {
           title: copy.title,
           message: copy.message,
           module: 'compliance',
-          actionUrl: '/onboarding',
+          actionUrl: `/apply/respond/${infoRequest.token}`,
         });
 
         if (user.email) {

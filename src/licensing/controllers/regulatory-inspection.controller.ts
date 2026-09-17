@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseIntPipe, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Capability } from '../../auth/capabilities';
 import { User } from '../../auth/entities/user.entity';
@@ -54,6 +54,8 @@ function describe(inspection: RegulatoryInspection) {
   return {
     id: inspection.id,
     caseId: inspection.case.id,
+    caseNumber: inspection.case.caseNumber ?? null,
+    caseTitle: inspection.case.title,
     organization: { id: inspection.organization.id, name: inspection.organization.name },
     facility: inspection.facility ? { id: inspection.facility.id, name: inspection.facility.name } : null,
     inspector: { id: inspection.inspector.id, name: inspection.inspector.fullName ?? inspection.inspector.email },
@@ -61,4 +63,26 @@ function describe(inspection: RegulatoryInspection) {
     notes: inspection.notes,
     inspectedAt: inspection.inspectedAt,
   };
+}
+
+@ApiTags('Regulatory Inspections')
+@ApiBearerAuth()
+@Controller('api/regulator/inspections')
+export class RegulatoryInspectionRosterController {
+  constructor(
+    private readonly inspections: RegulatoryInspectionService,
+    private readonly authorities: RegulatoryAuthorityService,
+  ) {}
+
+  @Get()
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async list(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    const take = Math.min(Number(limit) || 50, 100);
+    return (await this.inspections.listForAuthority(await this.authorities.forOperator(organization), take)).map(describe);
+  }
 }

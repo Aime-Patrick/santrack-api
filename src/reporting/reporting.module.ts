@@ -3,7 +3,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Batch } from '../batch/entities/batch.entity';
 import { InventoryService } from '../inventory/services/inventory.service';
 import { TraceableItem } from '../item/entities/traceable-item.entity';
+import { ComplianceFinding } from '../licensing/entities/compliance-finding.entity';
 import { License } from '../licensing/entities/license.entity';
+import { RegulatoryCase } from '../licensing/entities/regulatory-case.entity';
 import { Location } from '../location/entities/location.entity';
 import { Shipment } from '../logistics/entities/shipment.entity';
 import { ProductionOrder } from '../manufacturing/entities/production-order.entity';
@@ -30,6 +32,8 @@ import { ReportingService } from './reporting.service';
       Transfer,
       TraceableItem,
       Location,
+      ComplianceFinding,
+      RegulatoryCase,
     ]),
   ],
   controllers: [ReportingController],

@@ -19,8 +19,8 @@ export class ReportingController {
 
   @Get()
   @RequireCapability(Capability.VIEW_OPERATIONS)
-  async list() {
-    return { reports: this.reporting.list() };
+  async list(@ActingOrg() organization: Organization) {
+    return { reports: this.reporting.list(organization) };
   }
 
   @Get(':name')

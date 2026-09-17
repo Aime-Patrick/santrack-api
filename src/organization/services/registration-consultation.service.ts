@@ -367,12 +367,12 @@ export class RegistrationConsultationService {
         officers.map((u) =>
           this.notifications.sendToUser(u.id, {
             type: NotificationType.INFO,
-            title: 'New registration consultation',
+            title: 'Registration consultation',
             message:
-              `${consultation.fromAuthority.name} has requested your input on ` +
-              `${consultation.organization.name}'s registration: "${consultation.subject}"`,
+              `${consultation.fromAuthority.name} requested your input on ` +
+              `${consultation.organization.name}'s registration: "${consultation.subject}". Open registrations to respond.`,
             module: 'compliance',
-            actionUrl: '/dashboard/regulator',
+            actionUrl: '/dashboard/regulator?tab=registrations',
           }),
         ),
       );
@@ -409,9 +409,9 @@ export class RegistrationConsultationService {
             message:
               `${consultation.toAuthority.name} responded to your consultation on ` +
               `${consultation.organization.name}'s registration: ` +
-              `${verdictLabel[consultation.verdict!] ?? consultation.verdict}`,
+              `${verdictLabel[consultation.verdict!] ?? consultation.verdict}. Open registrations to continue the decision.`,
             module: 'compliance',
-            actionUrl: '/dashboard/regulator',
+            actionUrl: '/dashboard/regulator?tab=registrations',
           }),
         ),
       );

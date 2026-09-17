@@ -35,7 +35,17 @@ export class RegulatoryInspectionService {
   async listForCase(caseId: number, authority: RegulatoryAuthority): Promise<RegulatoryInspection[]> {
     return this.inspections.find({
       where: { case: { id: caseId, leadAuthority: { id: authority.id } } },
+      relations: { case: true, organization: true, facility: true, inspector: true },
       order: { inspectedAt: 'ASC' },
+    });
+  }
+
+  async listForAuthority(authority: RegulatoryAuthority, limit = 50): Promise<RegulatoryInspection[]> {
+    return this.inspections.find({
+      where: { case: { leadAuthority: { id: authority.id } } },
+      relations: { case: true, organization: true, facility: true, inspector: true },
+      order: { inspectedAt: 'DESC' },
+      take: Math.min(Math.max(limit, 1), 100),
     });
   }
 
@@ -110,7 +120,7 @@ export class RegulatoryInspectionService {
       await this.notifications.sendToUser(recipient.id, {
         type: NotificationType.WARNING,
         title: `Corrective action requested — ${label}`,
-        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Submit your corrective-action evidence to keep the case moving.`,
+        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Open cases to submit corrective-action evidence.`,
         module: 'compliance',
         actionUrl: '/dashboard/compliance/cases',
       });

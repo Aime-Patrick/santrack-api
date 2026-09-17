@@ -125,9 +125,9 @@ export class RegulatoryCaseDeadlineService {
       await this.notifications.sendToUser(recipient.id, {
         type: escalated ? NotificationType.ERROR : NotificationType.WARNING,
         title: escalated ? `Escalated case ${caseRecord.caseNumber}` : `Overdue case ${caseRecord.caseNumber}`,
-        message: `${caseRecord.title} was due on ${caseRecord.dueOn}. ${escalated ? 'It has been escalated for immediate regulator action.' : 'Assign follow-up or update the deadline decision.'}`,
+        message: `${caseRecord.title} was due on ${caseRecord.dueOn}. ${escalated ? 'Open the case now for immediate action.' : 'Assign follow-up or update the deadline from casework.'}`,
         module: 'regulator',
-        actionUrl: '/dashboard/regulator',
+        actionUrl: `/dashboard/regulator?tab=enforcement&case=${caseRecord.id}`,
       });
       notified += 1;
     }

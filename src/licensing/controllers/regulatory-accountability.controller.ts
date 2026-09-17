@@ -17,6 +17,20 @@ export class RegulatoryAccountabilityController {
     private readonly accountability: RegulatoryAccountabilityService,
   ) {}
 
+  @Get('recent')
+  @RequireCapability(Capability.VIEW_OPERATIONS)
+  async recent(
+    @ActingOrg() organization: Organization,
+    @CurrentUser() actor: User,
+    @Query('limit') limit?: string,
+  ) {
+    requireRegulator(organization, actor);
+    return this.accountability.authorityTimeline(
+      organization.id,
+      Math.min(Number(limit) || 40, 100),
+    );
+  }
+
   @Get('organization/:orgId')
   @RequireCapability(Capability.VIEW_OPERATIONS)
   async organizationTimeline(

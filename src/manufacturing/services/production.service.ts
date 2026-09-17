@@ -619,7 +619,7 @@ export class ProductionService {
                 this.notifications.sendToUser(u.id, {
                   type: NotificationType.WARNING,
                   title: `Lot ${batch.batchCode} awaiting QC`,
-                  message: `Production completed: ${producedQuantity} units of lot ${batch.batchCode} are ready for quality inspection.`,
+                  message: `Production completed: ${producedQuantity} units of lot ${batch.batchCode} are ready. Open QC to inspect the lot.`,
                   module: 'manufacturing',
                   actionUrl: '/dashboard/manufacturing/quality',
                 }),

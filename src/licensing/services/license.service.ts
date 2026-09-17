@@ -10,6 +10,7 @@ import {
   TraceabilityRuleException,
 } from '../../common/errors';
 import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { NotificationType } from '../../notifications/entities/notification.entity';
 import { EmailService } from '../../email/email.service';
 import { today } from '../../item/entities/traceable-item.entity';
 import { Facility } from '../../organization/entities/facility.entity';
@@ -320,7 +321,7 @@ export class LicenseService {
     actor: User,
     licenseId: number,
   ): Promise<License> {
-    return this.dataSource.transaction(async (manager) => {
+    const saved = await this.dataSource.transaction(async (manager) => {
       const license = await this.requireOwn(organization, licenseId, manager);
       if (
         license.status !== LicenseStatus.DRAFT &&
@@ -349,6 +350,10 @@ export class LicenseService {
         event: LicenseEventType.SUBMITTED,
       });
     });
+    this.notifyRegulatorsOfSubmission(saved).catch((err) =>
+      this.logger.warn(`Licence-submit notice for ${saved.licenseNumber} failed: ${err.message}`),
+    );
+    return saved;
   }
 
   /**
@@ -1162,36 +1167,36 @@ export class LicenseService {
     const licenceNum = license.licenseNumber;
     const categoryName = license.category.name;
 
-    const messageMap: Record<string, { title: string; message: string; notifType: string }> = {
+    const messageMap: Record<string, { title: string; message: string; notifType: NotificationType }> = {
       APPROVE: {
-        title: `Licence Approved: ${licenceNum}`,
-        message: `Your ${categoryName} licence (${licenceNum}) has been approved. ${license.expiresOn ? `Valid until ${license.expiresOn}.` : ''}`,
-        notifType: 'SUCCESS',
+        title: `Licence approved: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) is approved.${license.expiresOn ? ` Valid until ${license.expiresOn}.` : ''} Open licences to download the certificate and start authorised work.`,
+        notifType: NotificationType.SUCCESS,
       },
       REQUEST_CHANGES: {
         title: `Changes requested: ${licenceNum}`,
-        message: `Your ${categoryName} licence application (${licenceNum}) needs changes. ${reason ?? license.statusReason ?? 'Please update the application and resubmit.'}`,
-        notifType: 'WARNING',
+        message: `Your ${categoryName} application (${licenceNum}) needs changes. ${reason ?? license.statusReason ?? 'Update the application and resubmit from Licences.'}`,
+        notifType: NotificationType.WARNING,
       },
       REJECT: {
-        title: `Licence Rejected: ${licenceNum}`,
-        message: `Your ${categoryName} licence application (${licenceNum}) has been rejected. ${reason ?? license.statusReason ?? 'Please review and reapply.'}`,
-        notifType: 'WARNING',
+        title: `Licence rejected: ${licenceNum}`,
+        message: `Your ${categoryName} application (${licenceNum}) was rejected. ${reason ?? license.statusReason ?? 'Review the reason and reapply from Licences.'}`,
+        notifType: NotificationType.WARNING,
       },
       SUSPENDED: {
-        title: `Licence Suspended: ${licenceNum}`,
-        message: `Your ${categoryName} licence (${licenceNum}) has been suspended. ${reason ?? license.statusReason ?? ''}`,
-        notifType: 'DANGER',
+        title: `Licence suspended: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) is suspended. ${reason ?? license.statusReason ?? ''} Open licences to see the restriction.`,
+        notifType: NotificationType.ERROR,
       },
       REINSTATED: {
-        title: `Licence Reinstated: ${licenceNum}`,
-        message: `Your ${categoryName} licence (${licenceNum}) has been reinstated and is now active again.${license.expiresOn ? ` Valid until ${license.expiresOn}.` : ''}`,
-        notifType: 'SUCCESS',
+        title: `Licence reinstated: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) is active again.${license.expiresOn ? ` Valid until ${license.expiresOn}.` : ''} Open licences to confirm authorised work.`,
+        notifType: NotificationType.SUCCESS,
       },
       REVOKED: {
-        title: `Licence Revoked: ${licenceNum}`,
-        message: `Your ${categoryName} licence (${licenceNum}) has been permanently revoked. ${reason ?? license.statusReason ?? ''}`,
-        notifType: 'DANGER',
+        title: `Licence revoked: ${licenceNum}`,
+        message: `Your ${categoryName} licence (${licenceNum}) has been permanently revoked. ${reason ?? license.statusReason ?? ''} Open licences for the recorded decision.`,
+        notifType: NotificationType.ERROR,
       },
     };
 
@@ -1238,6 +1243,29 @@ export class LicenseService {
 
     await Promise.allSettled(notificationPromises);
     this.logger.log(`Notified ${users.length} user(s) at ${orgName} about ${licenceNum} (${action})`);
+  }
+
+  private async notifyRegulatorsOfSubmission(license: License): Promise<void> {
+    const regulators = await this.dataSource.getRepository(Organization).find({
+      where: { type: OrganizationType.REGULATOR },
+    });
+    if (regulators.length === 0) return;
+    const users = await this.dataSource.getRepository(User).find({
+      where: regulators.map((regulator) => ({ organization: { id: regulator.id } })),
+    });
+    const orgName = license.organization.name;
+    const categoryName = license.category.name;
+    await Promise.allSettled(
+      users.map((user) =>
+        this.notifications.sendToUser(user.id, {
+          type: NotificationType.WARNING,
+          title: `Licence to screen: ${license.licenseNumber}`,
+          message: `${orgName} submitted a ${categoryName} application. Open the licence queue to start review, request changes, or decide.`,
+          module: 'licensing',
+          actionUrl: '/dashboard/regulator?tab=licences',
+        }),
+      ),
+    );
   }
 
   private appPublicUrl(): string {

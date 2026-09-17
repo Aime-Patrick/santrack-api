@@ -12,6 +12,10 @@ import { RegulatoryCasePriority } from '../entities/regulatory-case.entity';
 import { UploadedFile } from './license.service';
 import { RegulatoryCaseService } from './regulatory-case.service';
 import { RegulatoryAuthorityService } from './regulatory-authority.service';
+import { Organization } from '../../organization/entities/organization.entity';
+import { OrganizationType } from '../../organization/organization-type.enum';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { NotificationType } from '../../notifications/entities/notification.entity';
 
 const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -24,6 +28,7 @@ export class PublicComplaintService {
     private readonly cases: RegulatoryCaseService,
     private readonly authorities: RegulatoryAuthorityService,
     @Inject(STORAGE_PROVIDER) private readonly storage: StorageProvider,
+    private readonly notifications: NotificationsGateway,
   ) {}
 
   async submit(dto: SubmitPublicComplaintDto, photo?: UploadedFile) {
@@ -41,6 +46,7 @@ export class PublicComplaintService {
           regulatoryCase: null,
         }));
       });
+      this.notifyRegulatorsOfComplaint(complaint).catch(() => undefined);
       // The reference is derived from the immutable row id, so no sequence or
       // extra write is needed and it can never drift from the record it names.
       return {
@@ -54,8 +60,31 @@ export class PublicComplaintService {
     }
   }
 
+  private async notifyRegulatorsOfComplaint(complaint: PublicComplaint) {
+    const regulators = await this.complaints.manager.getRepository(Organization).find({
+      where: { type: OrganizationType.REGULATOR },
+    });
+    if (regulators.length === 0) return;
+    const staff = await this.complaints.manager.getRepository(User).find({
+      where: regulators.map((regulator) => ({ organization: { id: regulator.id } })),
+    });
+    const issue = complaint.issue.replaceAll('_', ' ').toLowerCase();
+    const subject = complaint.item?.code ?? complaint.token;
+    await Promise.allSettled(
+      staff.map((user) =>
+        this.notifications.sendToUser(user.id, {
+          type: NotificationType.WARNING,
+          title: 'Market complaint in triage',
+          message: `${issue} reported on ${subject}. Open intelligence to dismiss it or promote it to a case.`,
+          module: 'regulator',
+          actionUrl: '/dashboard/regulator?tab=intelligence',
+        }),
+      ),
+    );
+  }
+
   async listTriage(): Promise<PublicComplaint[]> {
-    return this.complaints.find({ where: { status: PublicComplaintStatus.TRIAGE }, order: { receivedAt: 'DESC' }, take: 200 });
+    return this.complaints.find({ where: { status: PublicComplaintStatus.TRIAGE }, order: { receivedAt: 'DESC' }, take: 500 });
   }
 
   async promote(id: number, actor: User, dto: PromotePublicComplaintDto) {

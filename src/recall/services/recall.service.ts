@@ -21,6 +21,8 @@ import { collapseLotLifecycleEvents } from '../../traceability/collapse-lot-life
 import { RecallDto, RecallRecoveryDto, RecallRecoveryOutcome } from '../dto/recall.dto';
 import { RegulatoryCaseService } from '../../licensing/services/regulatory-case.service';
 import { RegulatoryCase, RegulatoryCaseEvent, RegulatoryCaseEventType } from '../../licensing/entities/regulatory-case.entity';
+import { NotificationsGateway } from '../../notifications/gateways/notifications.gateway';
+import { NotificationType } from '../../notifications/entities/notification.entity';
 
 export interface HolderImpact {
   organizationId: number | null;
@@ -65,6 +67,7 @@ export class RecallService {
     private readonly itemService: ItemService,
     private readonly recorder: EventRecorder,
     private readonly regulatoryCases: RegulatoryCaseService,
+    private readonly notifications: NotificationsGateway,
   ) {}
 
   /**
@@ -280,7 +283,9 @@ export class RecallService {
         await this.regulatoryCases.openRecallCase(actor, batch, manager);
       }
     });
-    return this.impact(dto.batchId);
+    const impact = await this.impact(dto.batchId);
+    this.notifyRecall(impact, dto.reason).catch(() => undefined);
+    return impact;
   }
 
   /** Lifts a recall once the cause has been resolved. */
@@ -330,7 +335,9 @@ export class RecallService {
       });
     });
 
-    return this.impact(batchId);
+    const impact = await this.impact(batchId);
+    this.notifyRecallLifted(impact, reason).catch(() => undefined);
+    return impact;
   }
 
   /** A scan changes the physical item's state and proves the outcome in the linked case. */
@@ -479,6 +486,56 @@ export class RecallService {
       destroyedUnits,
       holders,
     };
+  }
+
+  private async notifyRecall(impact: RecallImpact, reason?: string | null) {
+    const users = await this.recallAudience(impact);
+    const why = reason?.trim() ? ` ${reason.trim()}` : '';
+    await Promise.allSettled(
+      users.map((user) => {
+        const regulator = user.organization?.type === OrganizationType.REGULATOR;
+        return this.notifications.sendToUser(user.id, {
+          type: NotificationType.ERROR,
+          title: `Recall: batch ${impact.batchCode}`,
+          message: regulator
+            ? `Lot ${impact.batchCode} is recalled.${why} Open the recall desk to see holders and recoveries.`
+            : `Lot ${impact.batchCode} is recalled.${why} Hold remaining stock, stop sales, and record recoveries from the recall desk.`,
+          module: 'recall',
+          actionUrl: `/dashboard/recall/${impact.batchId}`,
+        });
+      }),
+    );
+  }
+
+  private async notifyRecallLifted(impact: RecallImpact, reason?: string | null) {
+    const users = await this.recallAudience(impact);
+    const why = reason?.trim() ? ` ${reason.trim()}` : '';
+    await Promise.allSettled(
+      users.map((user) =>
+        this.notifications.sendToUser(user.id, {
+          type: NotificationType.SUCCESS,
+          title: `Recall lifted: batch ${impact.batchCode}`,
+          message: `Lot ${impact.batchCode} is no longer under recall.${why} Open the recall desk to confirm current stock status.`,
+          module: 'recall',
+          actionUrl: `/dashboard/recall/${impact.batchId}`,
+        }),
+      ),
+    );
+  }
+
+  private async recallAudience(impact: RecallImpact): Promise<User[]> {
+    const orgIds = new Set<number>();
+    for (const holder of impact.holders) {
+      if (holder.organizationId) orgIds.add(holder.organizationId);
+    }
+    const regulators = await this.dataSource.getRepository(Organization).find({
+      where: { type: OrganizationType.REGULATOR },
+    });
+    for (const regulator of regulators) orgIds.add(regulator.id);
+    if (orgIds.size === 0) return [];
+    return this.dataSource.getRepository(User).find({
+      where: [...orgIds].map((id) => ({ organization: { id } })),
+    });
   }
 }
 

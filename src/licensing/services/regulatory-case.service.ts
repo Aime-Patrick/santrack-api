@@ -200,7 +200,7 @@ export class RegulatoryCaseService {
       await this.notifications.sendToUser(recipient.id, {
         type: NotificationType.WARNING,
         title: `Corrective action requested — ${label}`,
-        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Submit your corrective-action evidence to keep the case moving.`,
+        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Open cases to submit corrective-action evidence.`,
         module: 'compliance',
         actionUrl: '/dashboard/compliance/cases',
       });
@@ -220,7 +220,7 @@ export class RegulatoryCaseService {
       await this.notifications.sendToUser(recipient.id, {
         type: status === RegulatoryCaseStatus.RESOLVED ? NotificationType.SUCCESS : NotificationType.INFO,
         title: `${label} ${outcome}`,
-        message: `${caseRecord.title}${note ? `: ${note}` : ''}`,
+        message: `${caseRecord.title}${note ? `: ${note}` : ''}. Open cases to see the recorded decision.`,
         module: 'compliance',
         actionUrl: '/dashboard/compliance/cases',
       });
@@ -248,9 +248,9 @@ export class RegulatoryCaseService {
       await this.notifications.sendToUser(recipient.id, {
         type: NotificationType.INFO,
         title: `Corrective-action evidence received — ${label}`,
-        message: `${caseRecord.organization.name} submitted ${evidence.filename}. Review and decide the case.`,
+        message: `${caseRecord.organization.name} submitted ${evidence.filename}. Open the case to review and decide.`,
         module: 'regulator',
-        actionUrl: '/dashboard/regulator',
+        actionUrl: `/dashboard/regulator?tab=enforcement&case=${caseRecord.id}`,
       });
     }
   }
@@ -328,6 +328,7 @@ export class RegulatoryCaseService {
       caseCategory,
       assignedTeam,
     });
+    this.notifyBusinessOpened(caseRecord).catch(() => undefined);
     return caseRecord;
   }
 
@@ -382,6 +383,17 @@ export class RegulatoryCaseService {
       officerId: officer.id,
       note: note?.trim() || null,
     });
+    if (officer.id !== actor.id) {
+      this.notifications
+        .sendToUser(officer.id, {
+          type: NotificationType.WARNING,
+          title: `Assigned to you — ${saved.caseNumber ?? `case #${saved.id}`}`,
+          message: `${saved.title}. Open the case to inspect, request evidence, or close it.`,
+          module: 'regulator',
+          actionUrl: `/dashboard/regulator?tab=enforcement&case=${saved.id}`,
+        })
+        .catch(() => undefined);
+    }
     return saved;
   }
 
@@ -429,6 +441,13 @@ export class RegulatoryCaseService {
     if (pending) throw new TraceabilityRuleException('This case already has a pending referral');
     const referral = await this.referrals.save(this.referrals.create({ case: caseRecord, fromAuthority, toAuthority, reason: dto.reason.trim(), referredBy: actor, status: RegulatoryCaseReferralStatus.PENDING, decidedBy: null, decisionNote: null, decidedAt: null }));
     await this.record(caseRecord, actor, RegulatoryCaseEventType.REFERRED, `Referred to ${toAuthority.name}`, { referralId: referral.id, fromAuthorityId: fromAuthority.id, toAuthorityId: toAuthority.id, reason: referral.reason });
+    this.notifyAuthorityStaff(toAuthority, {
+      type: NotificationType.WARNING,
+      title: `Case referred to you — ${caseRecord.caseNumber ?? `case #${caseRecord.id}`}`,
+      message: `${fromAuthority.name} referred “${caseRecord.title}”: ${referral.reason}. Accept or decline from incoming referrals.`,
+      module: 'regulator',
+      actionUrl: '/dashboard/regulator?tab=enforcement',
+    }).catch(() => undefined);
     return referral;
   }
 
@@ -458,7 +477,49 @@ export class RegulatoryCaseService {
       await this.cases.save(caseRecord);
     }
     await this.record(caseRecord, actor, accept ? RegulatoryCaseEventType.REFERRAL_ACCEPTED : RegulatoryCaseEventType.REFERRAL_REJECTED, accept ? `Referral accepted by ${authority.name}` : `Referral declined by ${authority.name}`, { referralId: saved.id, fromAuthorityId: referral.fromAuthority.id, toAuthorityId: authority.id, note: saved.decisionNote });
+    this.notifyAuthorityStaff(referral.fromAuthority, {
+      type: accept ? NotificationType.SUCCESS : NotificationType.WARNING,
+      title: accept
+        ? `Referral accepted — ${caseRecord.caseNumber ?? `case #${caseRecord.id}`}`
+        : `Referral declined — ${caseRecord.caseNumber ?? `case #${caseRecord.id}`}`,
+      message: accept
+        ? `${authority.name} accepted “${caseRecord.title}”. It now sits with that authority.`
+        : `${authority.name} declined “${caseRecord.title}”. Keep the case on your desk or refer elsewhere.`,
+      module: 'regulator',
+      actionUrl: `/dashboard/regulator?tab=enforcement&case=${caseRecord.id}`,
+    }).catch(() => undefined);
     return saved;
+  }
+
+  private async notifyBusinessOpened(caseRecord: RegulatoryCase) {
+    const recipients = await this.users.find({
+      where: [
+        { organization: { id: caseRecord.organization.id }, role: UserRole.ORG_ADMIN },
+        { organization: { id: caseRecord.organization.id }, role: UserRole.MANAGEMENT },
+      ],
+    });
+    const label = caseRecord.caseNumber ?? `case #${caseRecord.id}`;
+    for (const recipient of recipients) {
+      await this.notifications.sendToUser(recipient.id, {
+        type: NotificationType.WARNING,
+        title: `Investigation opened — ${label}`,
+        message: `A regulator opened “${caseRecord.title}”. Prepare records; you may be asked for evidence from the cases desk.`,
+        module: 'compliance',
+        actionUrl: '/dashboard/compliance/cases',
+      });
+    }
+  }
+
+  private async notifyAuthorityStaff(
+    authority: RegulatoryAuthority,
+    payload: { type: NotificationType; title: string; message: string; module: string; actionUrl: string },
+  ) {
+    const orgId = authority.operatingOrganization?.id;
+    if (!orgId) return;
+    const staff = await this.users.find({ where: { organization: { id: orgId } } });
+    await Promise.allSettled(
+      staff.map((user) => this.notifications.sendToUser(user.id, payload)),
+    );
   }
 
   private async record(caseRecord: RegulatoryCase, actor: User, type: RegulatoryCaseEventType, summary: string, detail: Record<string, unknown>) {

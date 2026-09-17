@@ -192,7 +192,7 @@ import { ProductionEligibilityController } from './licensing/controllers/product
 import { ComplianceOverviewController } from './licensing/controllers/compliance-overview.controller';
 import { RegulatoryCaseController } from './licensing/controllers/regulatory-case.controller';
 import { RegulatoryCaseResponseController } from './licensing/controllers/regulatory-case-response.controller';
-import { RegulatoryInspectionController } from './licensing/controllers/regulatory-inspection.controller';
+import { RegulatoryInspectionController, RegulatoryInspectionRosterController } from './licensing/controllers/regulatory-inspection.controller';
 import { PublicComplaintController } from './licensing/controllers/public-complaint.controller';
 import { RegulatoryComplaintController } from './licensing/controllers/regulatory-complaint.controller';
 import { RegulatorySignalController } from './licensing/controllers/regulatory-signal.controller';
@@ -346,6 +346,7 @@ import { SearchService } from './search/search.service';
     RegulatoryCaseController,
     RegulatoryCaseResponseController,
     RegulatoryInspectionController,
+    RegulatoryInspectionRosterController,
     PublicComplaintController,
     RegulatoryComplaintController,
     RegulatorySignalController,

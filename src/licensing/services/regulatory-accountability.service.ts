@@ -24,6 +24,9 @@ export interface AccountabilityEntry {
   actorEmail: string | null;
   organization: string | null;
   recordedAt: Date;
+  organizationId?: number | null;
+  caseId?: number | null;
+  findingId?: number | null;
 }
 
 /**
@@ -179,6 +182,156 @@ export class RegulatoryAccountabilityService {
     // Sort all entries by time (newest first) and trim to limit
     entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
     return entries.slice(0, limit);
+  }
+
+  /**
+   * Authority-wide recent activity: case events, licence decisions, inspections,
+   * findings and complaints for businesses this regulator licensed or leads.
+   * The dashboard feed — not the platform HTTP audit log.
+   */
+  async authorityTimeline(regulatorOrgId: number, limit = 40): Promise<AccountabilityEntry[]> {
+    const entries: AccountabilityEntry[] = [];
+    const take = Math.min(Math.max(limit, 1), 100);
+
+    const caseEvents = await this.dataSource
+      .getRepository(RegulatoryCaseEvent)
+      .createQueryBuilder('e')
+      .innerJoinAndSelect('e.case', 'c')
+      .leftJoinAndSelect('c.organization', 'caseOrg')
+      .leftJoinAndSelect('e.actor', 'actor')
+      .innerJoin('c.leadAuthority', 'ra')
+      .where('ra.operating_organization_id = :orgId', { orgId: regulatorOrgId })
+      .orderBy('e.recordedAt', 'DESC')
+      .take(take)
+      .getMany();
+
+    for (const evt of caseEvents) {
+      entries.push({
+        id: evt.id,
+        source: 'CASE',
+        type: evt.type,
+        summary: evt.summary,
+        detail: evt.detail as Record<string, unknown> | null,
+        actor: evt.actor?.fullName ?? evt.actor?.email ?? null,
+        actorEmail: evt.actor?.email ?? null,
+        organization: evt.case?.organization?.name ?? null,
+        recordedAt: evt.recordedAt,
+        organizationId: evt.case?.organization?.id ?? null,
+        caseId: evt.case?.id ?? null,
+      });
+    }
+
+    const licenseEvents = await this.dataSource
+      .getRepository(LicenseEvent)
+      .createQueryBuilder('le')
+      .innerJoinAndSelect('le.license', 'l')
+      .leftJoinAndSelect('l.organization', 'licOrg')
+      .leftJoinAndSelect('le.actor', 'actor')
+      .where('l.issued_by_organization_id = :orgId', { orgId: regulatorOrgId })
+      .orderBy('le.recordedAt', 'DESC')
+      .take(take)
+      .getMany();
+
+    for (const evt of licenseEvents) {
+      entries.push({
+        id: evt.id,
+        source: 'LICENSE',
+        type: evt.type,
+        summary: buildLicenseSummary(evt),
+        detail: { fromStatus: evt.fromStatus, toStatus: evt.toStatus, notes: evt.notes },
+        actor: evt.actor?.fullName ?? evt.actor?.email ?? null,
+        actorEmail: evt.actor?.email ?? null,
+        organization: evt.license?.organization?.name ?? null,
+        recordedAt: evt.recordedAt,
+        organizationId: evt.license?.organization?.id ?? null,
+      });
+    }
+
+    const inspections = await this.dataSource
+      .getRepository(RegulatoryInspection)
+      .createQueryBuilder('i')
+      .innerJoinAndSelect('i.case', 'c')
+      .innerJoin('c.leadAuthority', 'ra')
+      .leftJoinAndSelect('i.inspector', 'inspector')
+      .leftJoinAndSelect('i.organization', 'inspOrg')
+      .where('ra.operating_organization_id = :orgId', { orgId: regulatorOrgId })
+      .orderBy('i.inspectedAt', 'DESC')
+      .take(take)
+      .getMany();
+
+    for (const inspection of inspections) {
+      entries.push({
+        id: inspection.id,
+        source: 'INSPECTION',
+        type: inspection.result,
+        summary: buildInspectionSummary(inspection),
+        detail: inspection.notes ? { notes: inspection.notes } : null,
+        actor: inspection.inspector?.fullName ?? inspection.inspector?.email ?? null,
+        actorEmail: inspection.inspector?.email ?? null,
+        organization: inspection.organization?.name ?? null,
+        recordedAt: inspection.inspectedAt,
+        organizationId: inspection.organization?.id ?? null,
+        caseId: inspection.case?.id ?? null,
+      });
+    }
+
+    const findings = await this.dataSource.query(
+      `SELECT cf.id, cf.type, cf.action, cf.detail, cf.recorded_at, cf.organization_id,
+              u.full_name AS actor_name, u.email AS actor_email, o.name AS org_name
+       FROM compliance_findings cf
+       INNER JOIN organizations o ON o.id = cf.organization_id
+       LEFT JOIN users u ON u.id = cf.actor_id
+       WHERE EXISTS (
+         SELECT 1 FROM licenses lic
+         WHERE lic.organization_id = cf.organization_id
+           AND lic.issued_by_organization_id = $1
+       )
+       ORDER BY cf.recorded_at DESC
+       LIMIT $2`,
+      [regulatorOrgId, take],
+    );
+
+    for (const f of findings) {
+      entries.push({
+        id: f.id,
+        source: 'FINDING',
+        type: f.type,
+        summary: f.action ?? f.detail ?? 'Compliance finding',
+        detail: { description: f.detail },
+        actor: f.actor_name ?? f.actor_email ?? null,
+        actorEmail: f.actor_email ?? null,
+        organization: f.org_name ?? null,
+        recordedAt: new Date(f.recorded_at),
+        organizationId: f.organization_id ?? null,
+        findingId: f.id,
+      });
+    }
+
+    const complaints = await this.dataSource.query(
+      `SELECT pc.id, pc.issue, pc.status, pc.note, pc.location_hint,
+              pc.reviewed_at, pc.received_at, o.id AS org_id, o.name AS org_name
+       FROM public_complaints pc
+       JOIN batches b ON b.id = pc.batch_id
+       JOIN organizations o ON o.id = b.manufacturer_id
+       WHERE EXISTS (
+         SELECT 1 FROM licenses lic
+         WHERE lic.organization_id = b.manufacturer_id
+           AND lic.issued_by_organization_id = $1
+       )
+       ORDER BY pc.received_at DESC
+       LIMIT $2`,
+      [regulatorOrgId, take],
+    );
+    const beforeComplaints = entries.length;
+    pushComplaintEntries(entries, complaints);
+    for (let i = beforeComplaints; i < entries.length; i += 1) {
+      const row = complaints.find((c: { id: number }) => c.id === Math.abs(entries[i].id));
+      if (row?.org_name) entries[i].organization = row.org_name;
+      if (row?.org_id) entries[i].organizationId = row.org_id;
+    }
+
+    entries.sort((a, b) => b.recordedAt.getTime() - a.recordedAt.getTime());
+    return entries.slice(0, take);
   }
 
   /**

@@ -80,6 +80,6 @@ export class RegulatorySignalService {
         firstSeenAt: attempt.firstSeenAt, lastSeenAt: attempt.lastSeenAt,
       });
     }
-    return signals.sort((a, b) => Number(b.severity === 'HIGH') - Number(a.severity === 'HIGH') || b.lastSeenAt.getTime() - a.lastSeenAt.getTime()).slice(0, 50);
+    return signals.sort((a, b) => Number(b.severity === 'HIGH') - Number(a.severity === 'HIGH') || b.lastSeenAt.getTime() - a.lastSeenAt.getTime()).slice(0, 100);
   }
 }
