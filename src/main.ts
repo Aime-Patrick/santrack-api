@@ -79,4 +79,7 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-void bootstrap();
+bootstrap().catch((err) => {
+  console.error('FATAL: Failed to start Nest application:', err);
+  process.exit(1);
+});
