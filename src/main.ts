@@ -71,9 +71,9 @@ async function bootstrap(): Promise<void> {
     SwaggerModule.setup('api-docs', app, document);
   }
 
-  await app.listen(port);
+  await app.listen(port, '0.0.0.0');
 
-  console.log(`SANTRACK API listening on http://localhost:${port}`);
+  console.log(`SANTRACK API listening on http://0.0.0.0:${port}`);
   if (!enableSwagger) {
     console.log('Swagger UI disabled in production (set ENABLE_SWAGGER=true to expose).');
   }

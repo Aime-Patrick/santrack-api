@@ -281,12 +281,20 @@ import { SearchService } from './search/search.service';
       useFactory: (config: ConfigService) => {
         const url = config.get<string>('redis.url');
         if (url) {
-          return { connection: { url } };
+          const isTls = url.startsWith('rediss://');
+          return {
+            connection: {
+              url,
+              ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
+              maxRetriesPerRequest: null,
+            },
+          };
         }
         return {
           connection: {
             host: config.getOrThrow<string>('redis.host'),
             port: config.getOrThrow<number>('redis.port'),
+            maxRetriesPerRequest: null,
           },
         };
       },

@@ -7,12 +7,22 @@
  * Production never seeds unless ALLOW_DEMO_SEED=true is set together with
  * SEED_ON_START=true. Demo accounts use well-known weak passwords.
  */
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
+
+const require = createRequire(import.meta.url);
+let typeormCli;
+try {
+  typeormCli = require.resolve('typeorm/cli.js');
+} catch {
+  typeormCli = './node_modules/typeorm/cli.js';
+}
 
 function run(label, command, args) {
   console.log(`\n→ ${label}`);
   const result = spawnSync(command, args, { stdio: 'inherit', shell: false });
   if (result.status !== 0) {
+    console.error(`❌ ${label} failed with exit code ${result.status}`);
     process.exit(result.status ?? 1);
   }
 }
@@ -20,7 +30,7 @@ function run(label, command, args) {
 run(
   'Running migrations',
   process.execPath,
-  ['./node_modules/typeorm/cli.js', 'migration:run', '-d', 'dist/config/data-source.js'],
+  [typeormCli, 'migration:run', '-d', 'dist/config/data-source.js'],
 );
 
 const wantsSeed = process.env.SEED_ON_START === 'true';
@@ -37,4 +47,5 @@ if (wantsSeed) {
   run('Seeding demo data', process.execPath, ['dist/seed.js']);
 }
 
-run('Starting API', process.execPath, ['dist/main.js']);
+console.log('\n→ Starting API');
+await import('../dist/main.js');

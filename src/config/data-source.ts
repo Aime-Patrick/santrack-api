@@ -202,13 +202,18 @@ function postgresConnection(): {
   username?: string;
   password?: string;
   ssl?: boolean | { rejectUnauthorized: boolean };
+  extra?: { ssl?: boolean | { rejectUnauthorized: boolean } };
 } {
   const url = process.env.DATABASE_URL?.trim();
   if (url) {
     const wantSsl = process.env.DB_SSL !== 'false';
+    const sslConfig = wantSsl ? { rejectUnauthorized: false } : undefined;
     return {
       url,
-      ssl: wantSsl ? { rejectUnauthorized: false } : undefined,
+      ssl: sslConfig,
+      extra: {
+        ssl: sslConfig,
+      },
     };
   }
 
