@@ -540,6 +540,41 @@ export class AuthService {
     return this.describe(refreshed ?? user);
   }
 
+  /**
+   * Platform operator sets email immediately — no inbox confirmation.
+   * For demo/support when the target mailbox is unreachable; self-service
+   * and org-admin flows still require verification.
+   */
+  async applyEmailImmediately(
+    user: User,
+    rawEmail: string,
+  ): Promise<AuthResult['user']> {
+    const newEmail = rawEmail.trim().toLowerCase();
+    if (!newEmail) {
+      throw new TraceabilityRuleException('A valid email address is required');
+    }
+    if (newEmail === user.email.trim().toLowerCase()) {
+      throw new TraceabilityRuleException('That is already the current email');
+    }
+
+    const taken = await this.users.findOne({ where: { email: newEmail } });
+    if (taken && taken.id !== user.id) {
+      throw new DuplicateException(`${newEmail} is already registered`);
+    }
+
+    user.email = newEmail;
+    user.pendingEmail = null;
+    user.emailChangeToken = null;
+    user.emailChangeExpiresAt = null;
+    await this.users.save(user);
+
+    const refreshed = await this.users.findOne({
+      where: { id: user.id },
+      relations: { organization: true },
+    });
+    return this.describe(refreshed ?? user);
+  }
+
   async cancelEmailChange(actor: User): Promise<AuthResult['user']> {
     const user = await this.users.findOne({
       where: { id: actor.id },

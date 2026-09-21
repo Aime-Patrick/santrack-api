@@ -192,6 +192,7 @@ describe('requesting a pool', () => {
       } as never,
       {} as never,
       {} as never,
+      { get: jest.fn() } as never,
     );
 
     // fill() runs unawaited in the background and would reach a database.

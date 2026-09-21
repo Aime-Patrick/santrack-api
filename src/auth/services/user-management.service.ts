@@ -206,8 +206,9 @@ export class UserManagementService {
   }
 
   /**
-   * Start an email change for another user. The new inbox must confirm;
-   * the current address stays until then.
+   * Change another user's email. Platform operators apply immediately (no
+   * inbox confirmation) so demo/support accounts can use addresses nobody
+   * can open. Org admins still require the new inbox to confirm.
    */
   async requestEmailChange(
     actor: User,
@@ -222,7 +223,13 @@ export class UserManagementService {
       throw new NotFoundEntityException('User', userId);
     }
     this.requireVisible(actor, user);
-    await this.auth.beginEmailChange(user, email);
+
+    if (actor.role === UserRole.SYSTEM_ADMIN) {
+      await this.auth.applyEmailImmediately(user, email);
+    } else {
+      await this.auth.beginEmailChange(user, email);
+    }
+
     const refreshed = await this.users.findOne({
       where: { id: userId },
       relations: { organization: true },

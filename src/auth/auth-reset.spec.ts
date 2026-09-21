@@ -41,6 +41,7 @@ function service(existing: Record<string, unknown> | null) {
       email as never,
       config as never,
       securityEvents as never,
+      {} as never,
     ),
     users,
     email,

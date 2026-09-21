@@ -79,8 +79,8 @@ export class UserController {
   }
 
   /**
-   * Request an email change for a user. Current address stays until the new
-   * inbox confirms (short-lived link).
+   * Change a user's email. Org admins send a verification link; platform
+   * operators apply the address immediately (no inbox confirmation).
    */
   @Post(':id/email-change')
   @RequireCapability(Capability.MANAGE_USERS)
